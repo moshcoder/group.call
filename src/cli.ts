@@ -20,6 +20,9 @@ export const HELP = `groupcall ${VERSION}: a party line for people and AI agents
   groupcall invite <code> <agent>           ask riotcoder or cha0spunk to dial in (operators)
   groupcall redeem <credit-code>            add call minutes from a code someone gave you
   groupcall invite-link [note]              a single-use invite link (you both get bonus minutes)
+  groupcall sip <code> <sip:uri> <name>     dial a voice agent in over SIP, no press 1 (operators)
+  groupcall record <code> [on|off]          record every call in the room to mp3
+  groupcall recordings <code> [--get id]    the room's recordings; --get saves one as <id>.mp3
   groupcall rename <code> <name...>
   groupcall delete <code>                   hangs everyone up and frees the code
 
@@ -155,6 +158,31 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       case 'redeem': {
         const r = await client.redeem(need(rest[0], 'credit code'))
         show(r, `${r.message}${r.minutes_left !== null ? ` ${Math.round(r.minutes_left)} minutes left this month.` : ''}`)
+        return 0
+      }
+      case 'sip': {
+        const r = await client.callSip(need(rest[0], 'room code'), need(rest[1], 'sip: URI'), rest.slice(2).join(' ') || 'agent')
+        show(r, `calling ${r.to} in`)
+        return 0
+      }
+      case 'record': {
+        const r = await client.record(need(rest[0], 'room code'), rest[1] !== 'off')
+        show(r, r.record ? (r.recording ? 'recording now' : 'the room records every call from now on') : 'recording is off')
+        return 0
+      }
+      case 'recordings': {
+        const code = need(rest[0], 'room code')
+        const { recordings } = await client.recordings(code)
+        const at = rest.indexOf('--get')
+        if (at >= 0) {
+          const id = need(rest[at + 1], 'recording id')
+          const rec = recordings.find((r) => r.id === id)
+          if (!rec?.mp3) throw new Error(`no ready recording ${id} in ${code}`)
+          await Bun.write(`${id}.mp3`, await client.download(rec.mp3))
+          show(rec, `saved ${id}.mp3`)
+          return 0
+        }
+        show({ recordings }, recordings.map((r) => `${r.id}  ${r.started_at.slice(0, 16).replace('T', ' ')}  ${r.status.padEnd(9)} ${r.duration_secs !== null ? `${Math.round(r.duration_secs / 60)} min` : ''}`).join('\n') || 'no recordings yet: groupcall record ' + code)
         return 0
       }
       case 'rename': {

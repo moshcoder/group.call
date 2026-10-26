@@ -14,9 +14,12 @@ export type ApiRoom = {
   created_at: string
   last_used_at: string | null
   page: string
+  record?: boolean
+  recording?: boolean
   live?: ApiPerson[]
   activity?: ApiActivity[]
 }
+export type ApiRecording = { id: string; status: 'recording' | 'saving' | 'ready' | 'failed'; duration_secs: number | null; bytes: number; started_at: string; ended_at: string | null; mp3: string | null; note?: string }
 export type ApiLine = { id: number; who: string; kind: 'person' | 'agent' | 'typed'; text: string; at: string }
 export type ApiMe = { name: string; email: string; dial_in: string; pass_until: string | null; room_limit: number; can_invite_agents: boolean; can_call_phones?: boolean; agents: string[]; rooms: ApiRoom[] }
 
@@ -93,6 +96,24 @@ export class GroupCallClient {
   /** Redeem a credit code (extra call minutes). */
   redeem(code: string): Promise<{ ok: boolean; message: string; minutes_left: number | null }> {
     return this.call('POST', '/api/v1/redeem', { code })
+  }
+  /** Dial a voice agent in over SIP: joins on answer, named, X- headers on the INVITE (operators). */
+  callSip(code: string, sip: string, name: string, headers: Record<string, string> = {}): Promise<{ ringing: boolean; to: string }> {
+    return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/call`, { sip, name, headers })
+  }
+  /** Record every call in the room (or stop). */
+  record(code: string, on = true): Promise<{ record: boolean; recording: boolean }> {
+    return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/record`, { on })
+  }
+  recordings(code: string): Promise<{ recordings: ApiRecording[] }> {
+    return this.call('GET', `/api/v1/rooms/${encodeURIComponent(code)}/recordings`)
+  }
+  /** A ready recording's mp3 bytes. */
+  async download(mp3Url: string): Promise<ArrayBuffer> {
+    if (!this.key) throw new ApiError(`Set GROUPCALL_KEY to your key from ${this.base}/me`, 401)
+    const response = await this.doFetch(mp3Url, { headers: { authorization: `Bearer ${this.key}` } })
+    if (!response.ok) throw new ApiError(`group.call answered ${response.status}`, response.status)
+    return response.arrayBuffer()
   }
   /** Ask one of our agents (riotcoder, cha0spunk) to dial in. */
   invite(code: string, agent: string): Promise<{ id: string; agent: string; status: string }> {

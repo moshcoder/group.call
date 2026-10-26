@@ -15,6 +15,7 @@ function telnyxKeys() {
 function telnyxRecorder() {
   const calls: { path: string; body: any }[] = []
   const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).startsWith('https://files.test/')) return new Response(new Uint8Array([0x49, 0x44, 0x33, 1, 2, 3]), { status: 200 })
     const path = String(url).replace('https://api.telnyx.com/v2', '')
     calls.push({ path, body: JSON.parse(String(init?.body ?? '{}')) })
     const json = path === '/conferences' ? { data: { id: 'conf-1' } } : path === '/calls' ? { data: { call_control_id: 'out-1' } } : {}
@@ -26,7 +27,7 @@ function telnyxRecorder() {
 const DIAL_IN = '+15106169327'
 const AGENT_CALLER = '+19492847328'
 
-function setup() {
+function setup(extra: Record<string, unknown> = {}) {
   const keys = telnyxKeys()
   const telnyx = telnyxRecorder()
   const store = new Store(':memory:', new Sealer('k'.repeat(32)))
@@ -47,6 +48,7 @@ function setup() {
       agentWorkerKey: 'worker-secret',
       agentCallerIds: { riotcoder: AGENT_CALLER, cha0spunk: '+15107667447' },
       fetch: telnyx.fetch,
+      ...extra,
     },
   })
   const tokens = { accessToken: 'a', refreshToken: null, expiresAt: 0 }
@@ -502,4 +504,49 @@ test('an invite link brings someone new in, once, and both of them get bonus min
   const landing = await app.request(`/i/${made.code}`)
   expect(landing.headers.get('set-cookie')).toContain('gc_invite=')
   expect(await landing.text()).toContain("You're invited to group.call")
+})
+describe('recording a room', () => {
+  test('a recording room records on the first join, and the saved mp3 is downloaded for its owner only', async () => {
+    const dir = `${process.env.TMPDIR ?? '/tmp'}/gc-rec-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const { call, event, telnyx, svc } = setup({ recordingsDir: dir })
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Podcast' })).json()) as any
+    const on = await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/record`, { on: true })
+    expect(((await on.json()) as any).record).toBe(true)
+    expect((await call('gc_guest', 'POST', `/api/v1/rooms/${room.code}/record`, { on: true })).status).toBe(404)
+
+    await event('call.answered', { call_control_id: 'leg-a', direction: 'incoming', from: '+14085550101' })
+    await event('call.gather.ended', { call_control_id: 'leg-a', digits: room.code })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(telnyx.calls.filter((c) => c.path === '/conferences/conf-1/actions/record_start').length).toBe(1)
+    expect(svc.line!.recording(room.code)).toBe(true)
+
+    await event('call.hangup', { call_control_id: 'leg-a' })
+    await event('conference.recording.saved', { conference_id: 'conf-1', recording_id: 'rec-t', recording_urls: { mp3: 'https://files.test/a.mp3' }, recording_started_at: '2026-10-26T10:00:00Z', recording_ended_at: '2026-10-26T10:42:00Z' })
+    await new Promise((r) => setTimeout(r, 50))
+    const list = (await (await call('gc_op', 'GET', `/api/v1/rooms/${room.code}/recordings`)).json()) as any
+    expect(list.recordings.length).toBe(1)
+    expect(list.recordings[0].status).toBe('ready')
+    expect(list.recordings[0].duration_secs).toBe(42 * 60)
+    const path = new URL(list.recordings[0].mp3).pathname
+    const file = await call('gc_op', 'GET', path)
+    expect(file.status).toBe(200)
+    expect(file.headers.get('content-type')).toBe('audio/mpeg')
+    expect(new Uint8Array(await file.arrayBuffer()).length).toBe(6)
+    expect((await call('gc_guest', 'GET', path)).status).toBe(404)
+  })
+
+  test('an operator dials a SIP voice agent in, direct and named; others and other hosts are refused', async () => {
+    const { call, event, telnyx, svc } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Show' })).json()) as any
+    const ok = await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { sip: 'sip:+15106169327@sip.rtc.elevenlabs.io;transport=tcp', name: 'riotcoder (host)', headers: { 'X-Otr-Episode': '3' } })
+    expect(ok.status).toBe(202)
+    const placed = telnyx.calls.find((c) => c.path === '/calls')!
+    expect(placed.body.to).toBe('sip:+15106169327@sip.rtc.elevenlabs.io;transport=tcp')
+    expect(placed.body.custom_headers).toEqual([{ name: 'X-Otr-Episode', value: '3' }])
+    await event('call.answered', { call_control_id: 'out-1' })
+    expect(svc.live(room.code).map((p) => p.name)).toEqual(['riotcoder (host)'])
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { sip: 'sip:x@evil.example', name: 'x' })).status).toBe(400)
+    const guestRoom = (await (await call('gc_guest', 'POST', '/api/v1/rooms', { name: 'Mine' })).json()) as any
+    expect((await call('gc_guest', 'POST', `/api/v1/rooms/${guestRoom.code}/call`, { sip: 'sip:+15106169327@sip.rtc.elevenlabs.io', name: 'x' })).status).toBe(403)
+  })
 })
