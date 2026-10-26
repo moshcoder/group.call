@@ -82,10 +82,13 @@ export const telLink = (dialIn: string, code: string) => `tel:${dialIn},,,${code
 export type LiveEvent = { type: 'join' | 'leave' | 'say' | 'invite' | 'line'; code: string; who: string; text?: string; callers: number; at: number; line?: Line }
 
 /** A participant as a page or the API may see them: a name, or a masked number. */
-export function shownParticipant(p: Participant, agentNumbers: string[] = [], known: Record<string, string> = {}): { name: string; kind: 'agent' | 'person'; since: number; trusted?: boolean } {
+export function shownParticipant(p: Participant, agentNumbers: Record<string, string> = {}, known: Record<string, string> = {}): { name: string; kind: 'agent' | 'person'; since: number; trusted?: boolean } {
   const knownName = Object.entries(known).find(([n]) => normalNumber(n) === normalNumber(p.from))?.[1]
   if (knownName && !p.name) return { name: knownName, kind: 'person', since: p.joinedAt, trusted: true }
-  const agent = Boolean(p.name) || agentNumbers.some((n) => normalNumber(n) === normalNumber(p.from))
+  // Each agent has its own number, so the number names it even when nothing else did.
+  const agentByNumber = Object.entries(agentNumbers).find(([, n]) => normalNumber(n) === normalNumber(p.from))?.[0]
+  if (agentByNumber) return { name: p.name || agentByNumber, kind: 'agent', since: p.joinedAt }
+  const agent = Boolean(p.name)
   const masked = p.from ? `caller ending ${p.from.replace(/\D/g, '').slice(-2)}` : 'a caller'
   return { name: p.name || (agent ? 'an agent' : masked), kind: agent ? 'agent' : 'person', since: p.joinedAt }
 }
@@ -95,12 +98,12 @@ export class GroupCallService {
   private readonly listeners = new Map<string, Set<(e: LiveEvent) => void>>()
   private readonly store: Store
   readonly config: Config
-  private readonly agentNumbers: string[]
+  private readonly agentNumbers: Record<string, string>
 
   constructor(store: Store, config: Config) {
     this.store = store
     this.config = config
-    this.agentNumbers = Object.values(config.agentCallerIds ?? {})
+    this.agentNumbers = config.agentCallerIds ?? {}
     this.line =
       config.telnyxApiKey && config.telnyxPublicKey
         ? new GroupCall({
