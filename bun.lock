@@ -8,7 +8,7 @@
         "@modelcontextprotocol/sdk": "^1.32.2",
         "@profullstack/coinpay-onboard": "^0.2.0",
         "@profullstack/footer": "^0.2.6",
-        "@profullstack/group-call": "^0.4.0",
+        "@profullstack/group-call": "^0.4.1",
         "@profullstack/hqtui": "^0.11.0",
         "hono": "^4.13.14",
         "zod": "^4.6.7",
@@ -31,7 +31,7 @@
 
     "@profullstack/footer": ["@profullstack/footer@0.2.6", "", { "peerDependencies": { "react": ">=18" }, "optionalPeers": ["react"], "bin": { "profullstack-footer": "bin/profullstack-footer.js" } }, "sha512-BKwbDszAc7e0mYIBiPjgr/5WS8WyDt8IW718s/zW/8pCWOIB1BGwSNs6fmImRSo5kqIjQKUVbXp22jZQ5GEipA=="],
 
-    "@profullstack/group-call": ["@profullstack/group-call@0.4.0", "", {}, "sha512-rpo/nq8ZIMz2NAGk/22IU9cmG4KQmHhjNjaZPsKS0Mq/97T9ktDggMWYbHBB62vDbTETAPm3DFV5tkYbmOlTNA=="],
+    "@profullstack/group-call": ["@profullstack/group-call@0.4.1", "", {}, "sha512-oRT8rvkyyysThWwc4U/iYrOJA0970VloxbD/KRIpjTMlYGTLQBkHl/WoBdAWUuxm6azZQqCEn9RpzFjLK/L53w=="],
 
     "@profullstack/hqtui": ["@profullstack/hqtui@0.11.1", "", { "bin": { "hqtui": "bin/hqtui.mjs" } }, "sha512-c/UzTmiRDjdLZQEO/gdVinUKtx6Q0WBPdixIm90MBTvC3DqFPqpersRs0BIDPS7XVokCSr1DtELI91kj5J1kCg=="],
 
