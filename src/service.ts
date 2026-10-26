@@ -46,6 +46,11 @@ export type Config = {
    * can never put one agent's name on another's line.
    */
   agentCallerIds?: Record<string, string>
+  /**
+   * Numbers this instance knows by name ("+14086562473" -> "Anthony"). Their lines
+   * carry that name, and agents may take work only from them.
+   */
+  knownCallers?: Record<string, string>
   /** Transcribe every leg (Telnyx, per minute per leg). On by default. */
   transcribe?: boolean
   origin?: string
@@ -77,7 +82,9 @@ export const telLink = (dialIn: string, code: string) => `tel:${dialIn},,,${code
 export type LiveEvent = { type: 'join' | 'leave' | 'say' | 'invite' | 'line'; code: string; who: string; text?: string; callers: number; at: number; line?: Line }
 
 /** A participant as a page or the API may see them: a name, or a masked number. */
-export function shownParticipant(p: Participant, agentNumbers: string[] = []): { name: string; kind: 'agent' | 'person'; since: number } {
+export function shownParticipant(p: Participant, agentNumbers: string[] = [], known: Record<string, string> = {}): { name: string; kind: 'agent' | 'person'; since: number; trusted?: boolean } {
+  const knownName = Object.entries(known).find(([n]) => normalNumber(n) === normalNumber(p.from))?.[1]
+  if (knownName && !p.name) return { name: knownName, kind: 'person', since: p.joinedAt, trusted: true }
   const agent = Boolean(p.name) || agentNumbers.some((n) => normalNumber(n) === normalNumber(p.from))
   const masked = p.from ? `caller ending ${p.from.replace(/\D/g, '').slice(-2)}` : 'a caller'
   return { name: p.name || (agent ? 'an agent' : masked), kind: agent ? 'agent' : 'person', since: p.joinedAt }
@@ -122,7 +129,7 @@ export class GroupCallService {
             },
             ...(config.transcribe === false ? {} : { transcribe: { engine: 'Deepgram', language: 'en' } }),
             onTranscript: (code, who, text) => {
-              const shown = shownParticipant(who, this.agentNumbers)
+              const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers)
               this.addLine(code, shown.name, shown.kind, text)
             },
             onEvent: (line) => console.log(line),
@@ -131,7 +138,7 @@ export class GroupCallService {
   }
 
   private record(code: string, kind: 'join' | 'leave', who: Participant, callers: number): void {
-    const shown = shownParticipant(who, this.agentNumbers)
+    const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers)
     this.store.addEvent({ code, kind, who: shown.name, text: '' })
     this.emit({ type: kind, code, who: shown.name, callers, at: Date.now() })
   }
@@ -205,14 +212,17 @@ export class GroupCallService {
   }
 
   /** For an agent on the line: how many people (not agents) are still in the room. */
-  roomStatus(code: string): { people: number; agents: number; live: ReturnType<GroupCallService['live']> } {
+  roomStatus(code: string) {
     const live = this.live(code)
-    return { people: live.filter((p) => p.kind === 'person').length, agents: live.filter((p) => p.kind === 'agent').length, live }
+    const trusted = new Set(Object.values(this.config.knownCallers ?? {}))
+    // The last few lines with who said them, so an agent can tell whether a request came from someone it works for.
+    const recent = this.store.transcript(code, { limit: 8 }).map((l) => ({ who: l.who, kind: l.kind, text: l.text, at: l.at, trusted: l.kind === 'person' && trusted.has(l.who) }))
+    return { people: live.filter((p) => p.kind === 'person').length, agents: live.filter((p) => p.kind === 'agent').length, live, recent }
   }
 
   live(code: string) {
     const people = this.line?.participants(code) ?? []
-    return people.map((p) => shownParticipant(p, this.agentNumbers))
+    return people.map((p) => shownParticipant(p, this.agentNumbers, this.config.knownCallers))
   }
 
   // ---- rooms ---------------------------------------------------------------

@@ -505,6 +505,12 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ...(env.GROUPCALL_VOICE_KEY_REF ? { telnyxVoiceKeyRef: env.GROUPCALL_VOICE_KEY_REF } : {}),
       agentOperators: list(env.GROUPCALL_AGENT_OPERATORS),
       ...(env.GROUPCALL_AGENT_WORKER_KEY ? { agentWorkerKey: env.GROUPCALL_AGENT_WORKER_KEY } : {}),
+      knownCallers: Object.fromEntries(
+        (env.GROUPCALL_KNOWN_CALLERS ?? '')
+          .split(',')
+          .map((pair) => pair.split('=').map((x) => x.trim()))
+          .filter((kv): kv is [string, string] => kv.length === 2 && Boolean(kv[0]) && Boolean(kv[1])),
+      ),
       agentCallerIds: Object.fromEntries(
         (env.GROUPCALL_AGENT_CALLER_IDS ?? '')
           .split(',')
