@@ -22,8 +22,19 @@
     const log = live.querySelector('[data-log]')
     const time = (ms) => new Date(ms).toISOString().slice(11, 16)
     const source = new EventSource(live.dataset.live)
+    const lines = document.querySelector('[data-lines]')
     source.addEventListener('room', (m) => {
       const e = JSON.parse(m.data)
+      if (e.type === 'line' && lines && e.line) {
+        lines.querySelector('.empty')?.remove()
+        const near = lines.scrollHeight - lines.scrollTop - lines.clientHeight < 80
+        const li = document.createElement('li')
+        li.className = e.line.kind
+        li.innerHTML = `<span class="muted">${time(e.line.at)}</span> <b>${esc(e.line.who)}</b>${e.line.kind === 'typed' ? ' <span class="muted">(typed)</span>' : ''} ${esc(e.line.text)}`
+        lines.append(li)
+        if (near) lines.scrollTop = lines.scrollHeight
+        return
+      }
       count.textContent = String(e.live.length)
       people.innerHTML = e.live.length
         ? e.live.map((p) => `<li class="${esc(p.kind)}"><span class="dot" aria-hidden="true"></span>${esc(p.name)} <span class="muted">${p.kind === 'agent' ? 'agent' : 'on the phone'}</span></li>`).join('')

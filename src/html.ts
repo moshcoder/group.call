@@ -5,7 +5,7 @@
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import type { AgentInvite, Pass, Room, RoomEvent, User } from './db.js'
+import type { AgentInvite, Line, Pass, Room, RoomEvent, User } from './db.js'
 import { pitFooter } from './pit-footer.js'
 import { RING_PLACEHOLDER } from './ring.js'
 import { ringFooter } from './ring-footer.js'
@@ -166,7 +166,9 @@ ${dialBlock(ctx)}`,
   })
 }
 
-export function roomPage(ctx: Ctx, data: { room: Room; owner: boolean; live: { name: string; kind: string; since: number }[]; events: RoomEvent[]; invites: AgentInvite[]; flash?: string; error?: string }): string {
+const lineHtml = (l: Line) => `<li class="${esc(l.kind)}"><span class="muted">${esc(when(l.at).slice(11, 16))}</span> <b>${esc(l.who)}</b>${l.kind === 'typed' ? ' <span class="muted">(typed)</span>' : ''} ${esc(l.text)}</li>`
+
+export function roomPage(ctx: Ctx, data: { room: Room; owner: boolean; live: { name: string; kind: string; since: number }[]; events: RoomEvent[]; invites: AgentInvite[]; transcript: Line[]; flash?: string; error?: string }): string {
   const r = data.room
   const people = data.live.length
     ? data.live.map((p) => `<li class="${esc(p.kind)}"><span class="dot" aria-hidden="true"></span>${esc(p.name)} <span class="muted">${p.kind === 'agent' ? 'agent' : 'on the phone'}</span></li>`).join('')
@@ -216,6 +218,11 @@ ${flashNote(data.flash)}${flashNote(data.error, true)}
     <ul class="log" data-log>${log}</ul>
   </section>
 </div>
+<section class="transcript">
+  <h2>Transcript <span class="muted small">live</span></h2>
+  <ol class="lines" data-lines>${data.transcript.length ? data.transcript.map(lineHtml).join('') : '<li class="muted empty">Nothing said yet. What people and agents say on the line shows up here as they say it.</li>'}</ol>
+  <p class="small"><a href="/r/${esc(r.code)}/transcript.txt">Download the transcript</a> · <span class="muted">transcribed by machine, so names and words can be wrong</span></p>
+</section>
 <p><button class="secondary" data-copy="${esc(invitation(r.name, ctx.dialIn, r.code))}">Copy the invitation</button></p>
 ${ownerTools}`,
   })

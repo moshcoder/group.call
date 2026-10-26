@@ -18,6 +18,9 @@ export type Room = { code: string; sub: string; name: string; createdAt: number;
 /** What happened in a room: somebody joined or left, or a line was said into it. */
 export type RoomEvent = { id: number; code: string; kind: 'join' | 'leave' | 'say' | 'invite'; who: string; text: string; at: number }
 
+/** One line said in a room: transcribed from a caller's leg, or typed in and read aloud. */
+export type Line = { id: number; code: string; who: string; kind: 'person' | 'agent' | 'typed'; text: string; at: number }
+
 export type AgentInvite = { id: string; code: string; agent: string; sub: string; status: 'queued' | 'dialling' | 'done' | 'failed'; note: string; createdAt: number; updatedAt: number }
 
 export type Pass = { id: string; sub: string; amountCents: number; status: string; checkoutUrl: string; days: number; paidAt: number | null; createdAt: number }
@@ -81,6 +84,15 @@ export class Store {
         at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS room_events_code ON room_events(code, id DESC);
+      CREATE TABLE IF NOT EXISTS transcript_lines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL,
+        who TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        text TEXT NOT NULL,
+        at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS transcript_lines_code ON transcript_lines(code, id);
       CREATE TABLE IF NOT EXISTS agent_invites (
         id TEXT PRIMARY KEY,
         code TEXT NOT NULL,
@@ -201,6 +213,7 @@ export class Store {
     this.db.transaction(() => {
       this.db.query('DELETE FROM rooms WHERE code = ?').run(code)
       this.db.query('DELETE FROM room_events WHERE code = ?').run(code)
+      this.db.query('DELETE FROM transcript_lines WHERE code = ?').run(code)
     })()
   }
 
@@ -215,6 +228,24 @@ export class Store {
 
   events(code: string, limit = 50): RoomEvent[] {
     return (this.db.query('SELECT * FROM room_events WHERE code = ? ORDER BY id DESC LIMIT ?').all(code, limit) as any[]).map((r) => ({ id: r.id, code: r.code, kind: r.kind, who: r.who, text: r.text, at: r.at }))
+  }
+
+  // ---- transcripts ---------------------------------------------------------
+
+  addLine(l: Omit<Line, 'id' | 'at'>, now = Date.now()): Line {
+    const row: any = this.db
+      .query('INSERT INTO transcript_lines (code, who, kind, text, at) VALUES (?, ?, ?, ?, ?) RETURNING id')
+      .get(l.code, l.who.slice(0, 80), l.kind, l.text.slice(0, 2000), now)
+    return { id: row.id, ...l, at: now }
+  }
+
+  /** A room's transcript, oldest first: the last `limit` lines, or those after line `after`. */
+  transcript(code: string, opts: { after?: number; limit?: number } = {}): Line[] {
+    const limit = Math.min(Math.max(1, opts.limit ?? 200), 5000)
+    const rows = (opts.after !== undefined
+      ? this.db.query('SELECT * FROM transcript_lines WHERE code = ? AND id > ? ORDER BY id LIMIT ?').all(code, opts.after, limit)
+      : this.db.query('SELECT * FROM (SELECT * FROM transcript_lines WHERE code = ? ORDER BY id DESC LIMIT ?) ORDER BY id').all(code, limit)) as any[]
+    return rows.map((r) => ({ id: r.id, code: r.code, who: r.who, kind: r.kind, text: r.text, at: r.at }))
   }
 
   // ---- agent invites -----------------------------------------------------

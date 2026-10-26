@@ -199,7 +199,7 @@ export function createApp(deps: Deps) {
   })
 
   const roomView = (c: Context, user: User, room: Room, extra: { flash?: string; error?: string } = {}, status = 200) =>
-    page(c, roomPage(ctxOf(c), { room, owner: room.sub === user.sub, live: svc.live(room.code), events: svc.events(room.code), invites: store.invites(room.code), ...extra }), status)
+    page(c, roomPage(ctxOf(c), { room, owner: room.sub === user.sub, live: svc.live(room.code), events: svc.events(room.code), invites: store.invites(room.code), transcript: store.transcript(room.code, { limit: 200 }), ...extra }), status)
 
   app.get('/r/:code', (c) => {
     const user = need(c, `r/${codeParam(c)}`)
@@ -230,6 +230,23 @@ export function createApp(deps: Deps) {
         if (open) await stream.write(': ping\n\n')
       }
     })
+  })
+
+  /** The whole transcript as plain text, for saving or pasting. */
+  app.get('/r/:code/transcript.txt', (c) => {
+    const user = userOf(c)
+    if (!user) return c.redirect(`/auth/start?next=/r/${codeParam(c)}`)
+    try {
+      const room = svc.ownRoom(user, codeParam(c))
+      const lines = svc.transcript(user, room.code, { limit: 5000 })
+      const text = lines.map((l) => `[${new Date(l.at).toISOString().slice(0, 19).replace('T', ' ')}] ${l.who}${l.kind === 'typed' ? ' (typed)' : ''}: ${l.text}`).join('\n')
+      return c.body(`${room.name} (${room.code}), group.call transcript\n\n${text || '(nothing said yet)'}\n`, 200, {
+        'content-type': 'text/plain; charset=utf-8',
+        'content-disposition': `inline; filename="groupcall-${room.code}-transcript.txt"`,
+      })
+    } catch {
+      return c.json({ error: 'not found' }, 404)
+    }
   })
 
   app.post('/r/:code/:action{(say|invite|rename|delete)}', async (c) => {
@@ -398,6 +415,15 @@ export function createApp(deps: Deps) {
       return c.json({ ok: true })
     }),
   )
+  app.get(
+    '/api/v1/rooms/:code/transcript',
+    api((c, u) => {
+      const after = c.req.query('after')
+      const limit = Number(c.req.query('limit') ?? 200)
+      const lines = svc.transcript(u, param(c, 'code'), { ...(after ? { after: Number(after) } : {}), limit })
+      return c.json({ lines: lines.map((l) => ({ id: l.id, who: l.who, kind: l.kind, text: l.text, at: new Date(l.at).toISOString() })) })
+    }),
+  )
   app.post(
     '/api/v1/rooms/:code/say',
     api(async (c, u) => {
@@ -475,6 +501,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       agentOperators: list(env.GROUPCALL_AGENT_OPERATORS),
       ...(env.GROUPCALL_AGENT_WORKER_KEY ? { agentWorkerKey: env.GROUPCALL_AGENT_WORKER_KEY } : {}),
       ...(env.GROUPCALL_AGENT_CALLER_ID ? { agentCallerId: env.GROUPCALL_AGENT_CALLER_ID } : {}),
+      transcribe: (env.GROUPCALL_TRANSCRIBE ?? '1') !== '0',
     },
   })
   const trustProxy = (env.GROUPCALL_TRUST_PROXY ?? '1') === '1'

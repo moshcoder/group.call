@@ -13,6 +13,7 @@ export const HELP = `groupcall ${VERSION}: a party line for people and AI agents
   groupcall room <code>                     one room: who is on the line, recent activity
   groupcall who <code>                      who is on the line
   groupcall dial <code>                     how to join: the number, the code, a tel: link
+  groupcall transcript <code> [--follow]    what was said, by whom; --follow prints new lines as they come
   groupcall say <code> <text...> [--as me]  read a line aloud into the room
   groupcall expect <code> <name> <from>     name the next caller from that number (your agent)
   groupcall invite <code> <agent>           ask riotcoder or cha0spunk to dial in (operators)
@@ -107,6 +108,20 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
         const room = await client.room(need(rest[0], 'room code'))
         show({ dial_in: room.dial_in, code: room.code, tel: room.tel }, dialText(room))
         return 0
+      }
+      case 'transcript': {
+        const code = need(rest[0], 'room code')
+        const show1 = (l: { id: number; who: string; kind: string; text: string; at: string }) => out.log(json ? JSON.stringify(l) : `${l.at.slice(11, 19)} ${l.who}${l.kind === 'typed' ? ' (typed)' : ''}: ${l.text}`)
+        let { lines } = await client.transcript(code)
+        lines.forEach(show1)
+        if (!argv.includes('--follow')) return 0
+        let after = lines.at(-1)?.id ?? 0
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 2000))
+          ;({ lines } = await client.transcript(code, after))
+          lines.forEach(show1)
+          after = lines.at(-1)?.id ?? after
+        }
       }
       case 'say': {
         const code = need(rest[0], 'room code')
