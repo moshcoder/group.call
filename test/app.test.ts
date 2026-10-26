@@ -17,7 +17,7 @@ function telnyxRecorder() {
   const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const path = String(url).replace('https://api.telnyx.com/v2', '')
     calls.push({ path, body: JSON.parse(String(init?.body ?? '{}')) })
-    const json = path === '/conferences' ? { data: { id: 'conf-1' } } : {}
+    const json = path === '/conferences' ? { data: { id: 'conf-1' } } : path === '/calls' ? { data: { call_control_id: 'out-1' } } : {}
     return new Response(JSON.stringify(json), { status: 200 })
   }) as unknown as typeof globalThis.fetch
   return { calls, fetch }
@@ -42,6 +42,7 @@ function setup() {
       telnyxApiKey: 'KEY_test',
       telnyxPublicKey: keys.publicKey,
       dialIn: DIAL_IN,
+      telnyxConnectionId: 'conn-gc',
       agentOperators: ['op@example.com'],
       agentWorkerKey: 'worker-secret',
       agentCallerIds: { riotcoder: AGENT_CALLER, cha0spunk: '+15107667447' },
@@ -427,4 +428,31 @@ test('the same phrase finalized twice is one line', async () => {
   await event('call.transcription', { call_control_id: 'leg-a', transcription_data: { transcript: 'The capital of Japan is Tokyo,', is_final: true } })
   await event('call.transcription', { call_control_id: 'leg-a', transcription_data: { transcript: 'The capital of Japan is Tokyo.', is_final: true } })
   expect(store.transcript(room.code).length).toBe(1)
+})
+
+describe('calling someone in', () => {
+  test('an operator rings a phone from the room number, and the answer presses 1 to join under its name', async () => {
+    const { call, event, telnyx, svc } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Standup' })).json()) as any
+    const r = await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '408-656-2473', name: 'Anthony' })
+    expect(r.status).toBe(202)
+    expect(((await r.json()) as any).to).toBe('408-656-2473')
+    const placed = telnyx.calls.find((c) => c.path === '/calls')!
+    expect(placed.body).toMatchObject({ to: '+14086562473', from: DIAL_IN, connection_id: 'conn-gc' })
+    await event('call.answered', { call_control_id: 'out-1', direction: 'outgoing' })
+    expect(telnyx.calls.at(-1)?.body.payload).toContain('Anthony is calling you into Standup. Press 1 to join.')
+    await event('call.gather.ended', { call_control_id: 'out-1', digits: '1' })
+    expect(svc.live(room.code)).toEqual([expect.objectContaining({ name: 'Anthony', kind: 'person' })])
+  })
+
+  test('a free account cannot ring phones, and nobody can ring abroad or our own lines', async () => {
+    const { call, telnyx } = setup()
+    const mine = (await (await call('gc_guest', 'POST', '/api/v1/rooms', { name: 'mine' })).json()) as any
+    expect((await call('gc_guest', 'POST', `/api/v1/rooms/${mine.code}/call`, { phone: '4086562473' })).status).toBe(402)
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+442071234567' })).status).toBe(400)
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: DIAL_IN })).status).toBe(400)
+    expect((await call('gc_guest', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '4086562473' })).status).toBe(404)
+    expect(telnyx.calls.some((c) => c.path === '/calls')).toBe(false)
+  })
 })

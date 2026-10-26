@@ -68,6 +68,8 @@ export function createApp(deps: Deps) {
   const writeLimit = new Limiter(60, 10 * 60_000)
   const sayLimit = new Limiter(30, 60_000)
   const authLimit = new Limiter(30, 10 * 60_000)
+  /** Ringing phones costs money and can annoy people: 10 an hour each. */
+  const dialLimit = new Limiter(10, 60 * 60_000)
 
   const ip = (c: Context<Env>) => c.env?.ip ?? 'local'
   const sessionId = (c: Context) => getCookie(c, SESSION)
@@ -75,7 +77,7 @@ export function createApp(deps: Deps) {
   const userOf = (c: Context) => store.session(sessionId(c))
   const ctxOf = (c: Context): Ctx => {
     const user = userOf(c)
-    return { user, csrf: csrfFor(sessionId(c)), dialIn: config.dialIn, agents: svc.mayInviteAgents(user), passUntil: user ? store.passUntil(user.sub) : null }
+    return { user, csrf: csrfFor(sessionId(c)), dialIn: config.dialIn, agents: svc.mayInviteAgents(user), callPhones: svc.mayCallPhones(user), passUntil: user ? store.passUntil(user.sub) : null }
   }
   const csrfOk = (c: Context, given: unknown) => {
     const expected = csrfFor(sessionId(c))
@@ -249,7 +251,7 @@ export function createApp(deps: Deps) {
     }
   })
 
-  app.post('/r/:code/:action{(say|invite|rename|delete)}', async (c) => {
+  app.post('/r/:code/:action{(say|invite|call|rename|delete)}', async (c) => {
     const user = need(c, `r/${codeParam(c)}`)
     if (user instanceof Response) return user
     const code = codeParam(c)
@@ -258,7 +260,7 @@ export function createApp(deps: Deps) {
     const form = await formOf(c)
     if (!csrfOk(c, form.csrf)) return roomView(c, user, room, { error: 'That form went stale. Try again.' }, 400)
     const action = c.req.param('action')
-    const limiter = action === 'say' ? sayLimit : writeLimit
+    const limiter = action === 'say' ? sayLimit : action === 'call' ? dialLimit : writeLimit
     if (!limiter.allow(`${action}:${user.sub}`)) return roomView(c, user, room, { error: 'Too many at once. Wait a moment.' }, 429)
     try {
       if (action === 'say') {
@@ -268,6 +270,10 @@ export function createApp(deps: Deps) {
       if (action === 'invite') {
         const invite = svc.inviteAgent(user, code, form.agent ?? '')
         return roomView(c, user, room, { flash: `${invite.agent} will dial in shortly.` })
+      }
+      if (action === 'call') {
+        const r = await svc.callPhone(user, code, form.phone ?? '', form.name ?? '')
+        return roomView(c, user, room, { flash: `Ringing ${r.to}. Pick up and press 1 to join.` })
       }
       if (action === 'rename') {
         const renamed = svc.renameRoom(user, code, form.name ?? '')
@@ -392,7 +398,7 @@ export function createApp(deps: Deps) {
     '/api/v1/me',
     api((c, u) => {
       const until = store.passUntil(u.sub)
-      return c.json({ name: u.name, email: u.email, dial_in: config.dialIn, pass_until: until ? new Date(until).toISOString() : null, room_limit: svc.roomLimit(u), can_invite_agents: svc.mayInviteAgents(u), agents: Object.keys(AGENTS), rooms: store.rooms(u.sub).map((r) => roomJson(r)) })
+      return c.json({ name: u.name, email: u.email, dial_in: config.dialIn, pass_until: until ? new Date(until).toISOString() : null, room_limit: svc.roomLimit(u), can_invite_agents: svc.mayInviteAgents(u), can_call_phones: svc.mayCallPhones(u), agents: Object.keys(AGENTS), rooms: store.rooms(u.sub).map((r) => roomJson(r)) })
     }),
   )
   app.get('/api/v1/rooms', api((c, u) => c.json({ rooms: store.rooms(u.sub).map((r) => roomJson(r)) })))
@@ -438,6 +444,14 @@ export function createApp(deps: Deps) {
       const b = await body(c)
       svc.expect(u, param(c, 'code'), String(b.name ?? ''), String(b.from ?? ''))
       return c.json({ ok: true, dial_in: config.dialIn, code: param(c, 'code'), within_seconds: 120 })
+    }),
+  )
+  app.post(
+    '/api/v1/rooms/:code/call',
+    api(async (c, u) => {
+      if (!dialLimit.allow(`call:${u.sub}`)) return c.json({ error: 'too many calls; 10 an hour' }, 429)
+      const b = await body(c)
+      return c.json(await svc.callPhone(u, param(c, 'code'), String(b.phone ?? b.to ?? ''), b.name ? String(b.name) : ''), 202)
     }),
   )
   app.post(
@@ -528,6 +542,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ...(env.TELNYX_API_KEY ? { telnyxApiKey: env.TELNYX_API_KEY } : {}),
       ...(env.TELNYX_PUBLIC_KEY ? { telnyxPublicKey: env.TELNYX_PUBLIC_KEY } : {}),
       dialIn: env.GROUPCALL_DIAL_IN!,
+      ...(env.TELNYX_CONNECTION_ID ? { telnyxConnectionId: env.TELNYX_CONNECTION_ID } : {}),
       ...(env.GROUPCALL_VOICE ? { voice: env.GROUPCALL_VOICE } : {}),
       ...(env.GROUPCALL_VOICE_KEY_REF ? { telnyxVoiceKeyRef: env.GROUPCALL_VOICE_KEY_REF } : {}),
       agentOperators: list(env.GROUPCALL_AGENT_OPERATORS),
