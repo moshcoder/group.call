@@ -49,6 +49,12 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
     { code, name: z.string().min(1).max(40), from: z.string().min(8).describe('E.164, e.g. +15551234567') },
     wrap(({ code, name, from }) => client.expect(code, name, from)),
   )
+  server.tool(
+    'call_phone',
+    'Ring a phone into a room, so a person does not have to dial in. The call comes from the room number; whoever answers presses 1 and is in. US/Canada numbers; needs a room pass or operator account.',
+    { code, phone: z.string().min(10).describe('e.g. 408-555-0101 or +14085550101'), name: z.string().max(40).optional().describe('Their name, so the room announces them') },
+    wrap(({ code, phone, name }) => client.callPhone(code, phone, name)),
+  )
   server.tool('invite_agent', "Ask one of the instance's own agents (riotcoder or cha0spunk) to dial in to a room. Operators only.", { code, agent: z.enum(['riotcoder', 'cha0spunk']) }, wrap(({ code, agent }) => client.invite(code, agent)))
   server.tool('rename_room', 'Rename a room.', { code, name: z.string().min(1).max(60) }, wrap(({ code, name }) => client.rename(code, name)))
   server.tool('delete_room', 'Delete a room: everyone on the line is hung up and the code is freed.', { code }, wrap(({ code }) => client.remove(code)))

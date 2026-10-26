@@ -32,7 +32,7 @@ const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
 
 const LOGO = `<svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M9.5 4.5c1.2 0 2.2.8 2.5 2l1 4c.2 1-.1 2-.9 2.6l-2 1.6a15 15 0 0 0 7.2 7.2l1.6-2c.6-.8 1.6-1.1 2.6-.9l4 1c1.2.3 2 1.3 2 2.5V26c0 1.4-1.1 2.5-2.5 2.5C14.4 28.5 3.5 17.6 3.5 7c0-1.4 1.1-2.5 2.5-2.5z" fill="currentColor"/><circle cx="22" cy="6" r="2" fill="currentColor"/><circle cx="27" cy="11" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg>`
 
-export type Ctx = { user: User | null; csrf: string; dialIn: string; agents: boolean; passUntil: number | null }
+export type Ctx = { user: User | null; csrf: string; dialIn: string; agents: boolean; callPhones?: boolean; passUntil: number | null }
 
 type LayoutOptions = { title: string; description: string; path: string; body: string; ctx: Ctx; noindex?: boolean; script?: boolean }
 
@@ -185,6 +185,15 @@ export function roomPage(ctx: Ctx, data: { room: Room; owner: boolean; live: { n
   <form method="post" action="/r/${esc(r.code)}/say" class="row">${csrfField(ctx)}<input name="text" maxlength="500" required placeholder="We'll start in two minutes." aria-label="What to say"><button>Say it</button></form>
 </section>
 ${
+  data.owner && ctx.callPhones
+    ? `<section>
+  <h2>Call someone in</h2>
+  <p class="muted small">The room rings their phone from ${esc(formatNumber(ctx.dialIn))}. They pick up, press 1, and they are in. No code to key.</p>
+  <form method="post" action="/r/${esc(r.code)}/call" class="row">${csrfField(ctx)}<input name="phone" type="tel" inputmode="tel" autocomplete="tel" required placeholder="408-555-0101" aria-label="Phone number"><input name="name" maxlength="40" placeholder="Name (optional)" aria-label="Their name"><button>Call them in</button></form>
+</section>`
+    : ''
+}
+${
   ctx.agents
     ? `<section>
   <h2>Ask an agent in</h2>
@@ -290,6 +299,7 @@ export function helpPage(ctx: Ctx): string {
 <section>
   <h2>Joining</h2>
   <p>Call <a href="tel:${esc(ctx.dialIn)}">${esc(number)}</a> and key the room's ${CODE_LENGTH}-digit code when asked. If you key it before the prompt finishes, that is fine. A wrong code gets three tries.</p>
+  <p>Or have the room call you: on a room's page, <b>Call someone in</b> rings any US or Canadian number from ${esc(number)}. Pick up, press 1, and you are in. That comes with a room pass.</p>
   <p>On a phone, a room's page has a link that dials and keys the code for you (<code>tel:${esc(ctx.dialIn)},,,4821#</code>).</p>
 </section>
 <section>
@@ -317,6 +327,7 @@ export function helpPage(ctx: Ctx): string {
     <tr><td><code>DELETE /api/v1/rooms/:code</code></td><td>hangs everyone up and frees the code</td></tr>
     <tr><td><code>POST /api/v1/rooms/:code/say</code></td><td><code>{"text", "as"?}</code>: read aloud into the room</td></tr>
     <tr><td><code>POST /api/v1/rooms/:code/expect</code></td><td><code>{"name", "from"}</code>: name the next caller from that number</td></tr>
+    <tr><td><code>POST /api/v1/rooms/:code/call</code></td><td><code>{"phone", "name"?}</code>: ring a phone into the room; they press 1 to join (pass)</td></tr>
     <tr><td><code>POST /api/v1/rooms/:code/agents</code></td><td><code>{"agent"}</code>: ask riotcoder or cha0spunk in (operators)</td></tr>
     <tr><td><code>GET /r/:code/live</code></td><td>server-sent events as people come and go (signed in)</td></tr>
   </table>
@@ -328,6 +339,7 @@ bunx @profullstack/groupcall              # the TUI: rooms and who is on them
 bunx @profullstack/groupcall new "Standup"
 bunx @profullstack/groupcall who 4821
 bunx @profullstack/groupcall say 4821 "starting now"
+bunx @profullstack/groupcall call 4821 408-555-0101 Anthony
 bunx @profullstack/groupcall invite 4821 riotcoder
 claude mcp add groupcall -e GROUPCALL_KEY=gc_… -- bunx @profullstack/groupcall mcp</code></pre>
   <p>Or <code>curl -fsSL ${SITE}/install.sh | sh</code>. The desktop app (Mac, Windows, Linux) comes with the CLI inside: <a href="${REPO}/releases">releases</a>. On a phone, add this site to your home screen.</p>

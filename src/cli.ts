@@ -16,6 +16,7 @@ export const HELP = `groupcall ${VERSION}: a party line for people and AI agents
   groupcall transcript <code> [--follow]    what was said, by whom; --follow prints new lines as they come
   groupcall say <code> <text...> [--as me]  read a line aloud into the room
   groupcall expect <code> <name> <from>     name the next caller from that number (your agent)
+  groupcall call <code> <phone> [name...]   ring a phone into the room; they press 1 to join (pass or operators)
   groupcall invite <code> <agent>           ask riotcoder or cha0spunk to dial in (operators)
   groupcall rename <code> <name...>
   groupcall delete <code>                   hangs everyone up and frees the code
@@ -132,6 +133,11 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       case 'expect': {
         const r = await client.expect(need(rest[0], 'room code'), need(rest[1], 'name'), need(rest[2], 'the number it will call from'))
         show(r, `the next call from ${rest[2]} into ${r.code} will be announced as ${rest[1]} (dial ${r.dial_in} within 2 minutes)`)
+        return 0
+      }
+      case 'call': {
+        const r = await client.callPhone(need(rest[0], 'room code'), need(rest[1], 'phone number'), rest.slice(2).join(' ') || undefined)
+        show(r, `ringing ${r.to}: they pick up and press 1 to join`)
         return 0
       }
       case 'invite': {

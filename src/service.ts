@@ -32,8 +32,10 @@ export type Config = {
   coinpayWebhookSecret?: string
   telnyxApiKey?: string
   telnyxPublicKey?: string
-  /** The number people dial, E.164. */
+  /** The number people dial, E.164. Also the caller id when the room rings someone. */
   dialIn: string
+  /** Telnyx call-control app id ("connection_id") that rings phones into rooms; without it, no dial-out. */
+  telnyxConnectionId?: string
   /** Main prompt voice; an ElevenLabs voice needs telnyxVoiceKeyRef. */
   voice?: string
   telnyxVoiceKeyRef?: string
@@ -82,9 +84,12 @@ export const telLink = (dialIn: string, code: string) => `tel:${dialIn},,,${code
 export type LiveEvent = { type: 'join' | 'leave' | 'say' | 'invite' | 'line'; code: string; who: string; text?: string; callers: number; at: number; line?: Line }
 
 /** A participant as a page or the API may see them: a name, or a masked number. */
-export function shownParticipant(p: Participant, agentNumbers: Record<string, string> = {}, known: Record<string, string> = {}): { name: string; kind: 'agent' | 'person'; since: number; trusted?: boolean } {
+export function shownParticipant(p: Participant, agentNumbers: Record<string, string> = {}, known: Record<string, string> = {}, calledIn: Map<string, string> = new Map()): { name: string; kind: 'agent' | 'person'; since: number; trusted?: boolean } {
   const knownName = Object.entries(known).find(([n]) => normalNumber(n) === normalNumber(p.from))?.[1]
   if (knownName && !p.name) return { name: knownName, kind: 'person', since: p.joinedAt, trusted: true }
+  // A person the room rang, by the name its owner gave: a person, and not one agents take work from.
+  const calledName = p.from ? calledIn.get(normalNumber(p.from)) : undefined
+  if (calledName && !p.name) return { name: calledName, kind: 'person', since: p.joinedAt }
   // Each agent has its own number, so the number names it even when nothing else did.
   const agentByNumber = Object.entries(agentNumbers).find(([, n]) => normalNumber(n) === normalNumber(p.from))?.[0]
   if (agentByNumber) return { name: p.name || agentByNumber, kind: 'agent', since: p.joinedAt }
@@ -99,6 +104,8 @@ export class GroupCallService {
   private readonly store: Store
   readonly config: Config
   private readonly agentNumbers: Record<string, string>
+  /** Phones a room rang, by number, with the name the owner gave them. */
+  private readonly calledIn = new Map<string, string>()
 
   constructor(store: Store, config: Config) {
     this.store = store
@@ -127,10 +134,10 @@ export class GroupCallService {
               this.record(code, 'join', who, info.callers)
               // One leg per agent per room: a newer one replaces an older, so a restart or a
               // process that died without hanging up can never leave a silent twin behind.
-              const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers)
+              const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
               if (shown.kind === 'agent' && shown.name !== 'an agent') {
                 for (const p of this.line?.participants(code) ?? []) {
-                  if (p.leg !== who.leg && shownParticipant(p, this.agentNumbers, this.config.knownCallers).name === shown.name) void this.line?.kick(code, p.leg)
+                  if (p.leg !== who.leg && shownParticipant(p, this.agentNumbers, this.config.knownCallers, this.calledIn).name === shown.name) void this.line?.kick(code, p.leg)
                 }
               }
             },
@@ -140,7 +147,7 @@ export class GroupCallService {
             },
             ...(config.transcribe === false ? {} : { transcribe: { engine: 'Deepgram', language: 'en' } }),
             onTranscript: (code, who, text) => {
-              const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers)
+              const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
               // An agent's voice coming back through a person's speakerphone is the agent, not them.
               if (shown.kind === 'person' && this.isEcho(code, text)) return
               this.addLine(code, shown.name, shown.kind, text)
@@ -151,7 +158,7 @@ export class GroupCallService {
   }
 
   private record(code: string, kind: 'join' | 'leave', who: Participant, callers: number): void {
-    const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers)
+    const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
     this.store.addEvent({ code, kind, who: shown.name, text: '' })
     this.emit({ type: kind, code, who: shown.name, callers, at: Date.now() })
   }
@@ -274,7 +281,7 @@ export class GroupCallService {
     for (const r of this.line.list()) {
       const who = this.line.participants(r.code).find((x) => x.leg === leg)
       if (!who) continue
-      const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers)
+      const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
       const q = {
         code: r.code,
         leg,
@@ -292,7 +299,7 @@ export class GroupCallService {
 
   live(code: string) {
     const people = this.line?.participants(code) ?? []
-    return people.map((p) => shownParticipant(p, this.agentNumbers, this.config.knownCallers))
+    return people.map((p) => shownParticipant(p, this.agentNumbers, this.config.knownCallers, this.calledIn))
   }
 
   // ---- rooms ---------------------------------------------------------------
@@ -365,6 +372,40 @@ export class GroupCallService {
     if (!clean) throw new UserError('Give the agent a name.', 'name')
     if (!normalNumber(from)) throw new UserError('Which number will it call from?', 'from')
     this.line?.expect(room.code, from, clean)
+  }
+
+  // ---- ringing a phone in --------------------------------------------------
+
+  /** Who may have a room call a phone: operators and room-pass holders (it is a paid outbound call). */
+  mayCallPhones(user: User | null): boolean {
+    return Boolean(user && this.line && this.config.telnyxConnectionId) && (this.mayInviteAgents(user) || Boolean(this.store.passUntil(user!.sub)))
+  }
+
+  /**
+   * Ring a phone and bring whoever answers into the room, so a person does not
+   * have to dial in. The call comes from the room's dial-in number, and the
+   * answer presses 1 to join, so voicemail never lands in the room.
+   */
+  async callPhone(user: User, code: string, phone: string, name = ''): Promise<{ ringing: true; to: string }> {
+    const room = this.ownRoom(user, code)
+    if (!this.mayCallPhones(user)) throw new UserError(this.line && this.config.telnyxConnectionId ? `Calling a phone into a room comes with a room pass ($${PASS_USD} for ${PASS_DAYS} days).` : 'Calling phones is not set up on this instance.', 'phone', this.line && this.config.telnyxConnectionId ? 402 : 503)
+    const to = normalNumber(phone)
+    // North American numbers only: an international dial-out is the classic way to run up a phone bill.
+    if (!/^\+1[2-9]\d{2}[2-9]\d{6}$/.test(to)) throw new UserError('Give a US or Canadian phone number, like 408-555-0101.', 'phone')
+    if (to === normalNumber(this.config.dialIn) || Object.values(this.agentNumbers).some((n) => normalNumber(n) === to)) throw new UserError('That is one of our own lines.', 'phone')
+    const clean = name.replace(/\s+/g, ' ').trim().slice(0, 40)
+    const placed = await this.line!.dial(room.code, to, {
+      from: this.config.dialIn,
+      connectionId: this.config.telnyxConnectionId!,
+      prompt: `This is group call. ${user.name ? `${user.name} is` : 'Someone is'} calling you into ${room.name}.`,
+      welcome: `Welcome to ${room.name}. `,
+    })
+    if (!placed) throw new UserError('The call could not be placed. Try again in a minute.', 'phone', 502)
+    if (clean) this.calledIn.set(to, clean)
+    const shown = clean || `phone ending ${to.slice(-2)}`
+    this.store.addEvent({ code: room.code, kind: 'invite', who: shown, text: 'is being called in' })
+    this.emit({ type: 'invite', code: room.code, who: shown, text: 'is being called in', callers: this.line?.callersIn(room.code) ?? 0, at: Date.now() })
+    return { ringing: true, to: formatNumber(to) }
   }
 
   // ---- our agents ----------------------------------------------------------

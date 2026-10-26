@@ -18,7 +18,7 @@ export type ApiRoom = {
   activity?: ApiActivity[]
 }
 export type ApiLine = { id: number; who: string; kind: 'person' | 'agent' | 'typed'; text: string; at: string }
-export type ApiMe = { name: string; email: string; dial_in: string; pass_until: string | null; room_limit: number; can_invite_agents: boolean; agents: string[]; rooms: ApiRoom[] }
+export type ApiMe = { name: string; email: string; dial_in: string; pass_until: string | null; room_limit: number; can_invite_agents: boolean; can_call_phones?: boolean; agents: string[]; rooms: ApiRoom[] }
 
 export class ApiError extends Error {
   readonly status: number
@@ -81,6 +81,10 @@ export class GroupCallClient {
   /** Name the next caller from `from` into this room, for two minutes. */
   expect(code: string, name: string, from: string): Promise<{ ok: boolean; dial_in: string; code: string }> {
     return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/expect`, { name, from })
+  }
+  /** Ring a phone into the room: whoever answers presses 1 and is in. */
+  callPhone(code: string, phone: string, name?: string): Promise<{ ringing: boolean; to: string }> {
+    return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/call`, { phone, ...(name ? { name } : {}) })
   }
   /** Ask one of our agents (riotcoder, cha0spunk) to dial in. */
   invite(code: string, agent: string): Promise<{ id: string; agent: string; status: string }> {
