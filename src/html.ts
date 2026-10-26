@@ -80,6 +80,13 @@ ${pitFooter()}
 </html>`
 }
 
+/**
+ * What to paste into a text or an email. Plain words only: a tel: link with its
+ * pauses and an encoded # reads as gibberish there, and every phone already turns
+ * the number into something you can tap.
+ */
+export const invitation = (name: string, dialIn: string, code: string) => `Join "${name}" on group.call: call ${formatNumber(dialIn)}, then key ${code}#`
+
 const csrfField = (ctx: Ctx) => `<input type="hidden" name="csrf" value="${esc(ctx.csrf)}">`
 const flashNote = (flash?: string, error = false) => (flash ? `<p class="note${error ? ' error' : ''}" role="${error ? 'alert' : 'status'}">${esc(flash)}</p>` : '')
 const signInButton = (next = 'rooms', label = 'Sign in with CoinPay') => `<a class="button" href="/auth/start?next=/${next}">${esc(label)}</a>`
@@ -209,7 +216,7 @@ ${flashNote(data.flash)}${flashNote(data.error, true)}
     <ul class="log" data-log>${log}</ul>
   </section>
 </div>
-<p><button class="secondary" data-copy="Join ${esc(r.name)}: call ${esc(formatNumber(ctx.dialIn))} and key ${esc(r.code)}. Or tap ${esc(telLink(ctx.dialIn, r.code))}">Copy the invitation</button></p>
+<p><button class="secondary" data-copy="${esc(invitation(r.name, ctx.dialIn, r.code))}">Copy the invitation</button></p>
 ${ownerTools}`,
   })
 }
