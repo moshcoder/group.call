@@ -320,3 +320,16 @@ describe('a deploy does not touch a live room', () => {
     expect(status.people).toBe(2)
   })
 })
+
+test('an invite stuck "dialling" from an agent that never arrived does not block a new one', async () => {
+  const { call, store, svc } = setup()
+  const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Stuck' })).json()) as any
+  const first = (await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/agents`, { agent: 'riotcoder' })).json()) as any
+  expect(svc.nextInvite()?.id).toBe(first.id)
+  // Three minutes later, riotcoder never showed up.
+  store.db.query('UPDATE agent_invites SET updated_at = ? WHERE id = ?').run(Date.now() - 3 * 60_000, first.id)
+  const again = (await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/agents`, { agent: 'riotcoder' })).json()) as any
+  expect(again.id).not.toBe(first.id)
+  expect(again.status).toBe('queued')
+  expect(store.invite(first.id)?.status).toBe('failed')
+})

@@ -300,7 +300,10 @@ export class GroupCallService {
     if (!this.mayInviteAgents(user)) throw new UserError('Inviting our agents is for the operators of this instance for now. Your own agents can dial in themselves: see /help#agents.', undefined, 403)
     if (!AGENTS[agent]) throw new UserError(`No agent called ${agent}. Try ${Object.keys(AGENTS).join(' or ')}.`, 'agent', 404)
     const open = this.store.openInvite(room.code, agent)
-    if (open) return open
+    // A "dialling" invite whose agent never showed up (its process died) must not block a new one.
+    const onLine = this.live(room.code).some((p) => p.name === agent)
+    if (open && (open.status === 'queued' || onLine || Date.now() - open.updatedAt < 2 * 60_000)) return open
+    if (open) this.store.finishInvite(open.id, 'failed', 'the agent never arrived')
     const invite = this.store.addInvite({ code: room.code, agent, sub: user.sub })
     this.store.addEvent({ code: room.code, kind: 'invite', who: agent, text: 'asked to dial in' })
     this.emit({ type: 'invite', code: room.code, who: agent, text: 'asked to dial in', callers: this.line?.callersIn(room.code) ?? 0, at: Date.now() })
