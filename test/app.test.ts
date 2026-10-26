@@ -402,3 +402,19 @@ test('an agent joining twice keeps only its newest leg', async () => {
   expect(telnyx.calls.some((c) => c.path === '/calls/leg-old/actions/hangup')).toBe(true)
   expect(telnyx.calls.some((c) => c.path === '/calls/leg-new/actions/hangup')).toBe(false)
 })
+
+test('an agent can follow the room line by line, waiting for the next', async () => {
+  const { call, event, app } = setup()
+  const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Lines' })).json()) as any
+  await event('call.initiated', { call_control_id: 'leg-p', direction: 'incoming', from: '+15550001111' })
+  await event('call.gather.ended', { call_control_id: 'leg-p', digits: room.code })
+  const worker = { authorization: 'Bearer worker-secret' }
+  expect((await app.request(`/api/v1/agent-queue/rooms/${room.code}/lines`)).status).toBe(401)
+  const waiting = app.request(`/api/v1/agent-queue/rooms/${room.code}/lines?after=0&wait=5`, { headers: worker })
+  await new Promise((r) => setTimeout(r, 30))
+  await event('call.transcription', { call_control_id: 'leg-p', transcription_data: { transcript: 'Chaos Punk, what is 12 plus 30?', is_final: true } })
+  const got = (await (await waiting).json()) as any
+  expect(got.lines.map((l: any) => `${l.who}: ${l.text}`)).toEqual(['caller ending 11: Chaos Punk, what is 12 plus 30?'])
+  const none = (await (await app.request(`/api/v1/agent-queue/rooms/${room.code}/lines?after=${got.lines[0].id}&wait=0`, { headers: worker })).json()) as any
+  expect(none.lines).toEqual([])
+})
