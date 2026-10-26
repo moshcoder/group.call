@@ -385,7 +385,7 @@ export function createApp(deps: Deps) {
     created_at: new Date(r.createdAt).toISOString(),
     last_used_at: r.lastUsedAt ? new Date(r.lastUsedAt).toISOString() : null,
     page: `${ORIGIN}/r/${r.code}`,
-    ...(full ? { live: svc.live(r.code), activity: svc.events(r.code).slice(0, 20).map((e) => ({ kind: e.kind, who: e.who, text: e.text || undefined, at: new Date(e.at).toISOString() })) } : {}),
+    ...(full ? { quality: store.quality(r.code, 10).map((q) => ({ who: q.who, mos_in: q.mosIn, mos_out: q.mosOut, jitter_ms: q.jitterMs, loss_pct: q.lossPct, at: new Date(q.at).toISOString() })), live: svc.live(r.code), activity: svc.events(r.code).slice(0, 20).map((e) => ({ kind: e.kind, who: e.who, text: e.text || undefined, at: new Date(e.at).toISOString() })) } : {}),
   })
 
   app.get(

@@ -378,3 +378,27 @@ test("an agent calling from its own number is named by it even when no name was 
   // qrypt.chat's shared caller id is a person unless named.
   expect(shownParticipant({ leg: 'l', from: '+19492847328', name: '', joinedAt: 0 }, numbers)).toMatchObject({ name: 'caller ending 28', kind: 'person' })
 })
+
+test("a leg's audio quality is kept on hangup, a poor one is flagged, and agents get the room's history", async () => {
+  const { call, event, store, svc } = setup()
+  const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Quality' })).json()) as any
+  await event('call.initiated', { call_control_id: 'leg-p', direction: 'incoming', from: '+15550001111' })
+  await event('call.gather.ended', { call_control_id: 'leg-p', digits: room.code })
+  await event('call.transcription', { call_control_id: 'leg-p', transcription_data: { transcript: 'we decided on Tuesday', is_final: true } })
+  const status = svc.roomStatus(room.code)
+  expect(status.history.map((l) => l.text)).toEqual(['we decided on Tuesday'])
+  await event('call.hangup', { call_control_id: 'leg-p', call_quality_stats: { inbound: { mos: '3.1', packet_loss: '2.5' }, outbound: { mos: '4.3' } } })
+  expect(store.quality(room.code)[0]).toMatchObject({ who: 'caller ending 11', mosIn: 3.1, mosOut: 4.3, lossPct: 2.5 })
+  expect(store.events(room.code).some((e) => e.kind === 'quality' && e.text.includes('poor audio'))).toBe(true)
+})
+
+test('an agent joining twice keeps only its newest leg', async () => {
+  const { call, event, telnyx } = setup()
+  const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Twins' })).json()) as any
+  for (const leg of ['leg-old', 'leg-new']) {
+    await event('call.initiated', { call_control_id: leg, direction: 'incoming', from: AGENT_CALLER })
+    await event('call.gather.ended', { call_control_id: leg, digits: room.code })
+  }
+  expect(telnyx.calls.some((c) => c.path === '/calls/leg-old/actions/hangup')).toBe(true)
+  expect(telnyx.calls.some((c) => c.path === '/calls/leg-new/actions/hangup')).toBe(false)
+})

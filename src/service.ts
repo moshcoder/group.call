@@ -125,6 +125,14 @@ export class GroupCallService {
             onJoin: (code, who, info) => {
               if (info.conferenceId) store.saveLeg(code, info.conferenceId, info.startedAt, who)
               this.record(code, 'join', who, info.callers)
+              // One leg per agent per room: a newer one replaces an older, so a restart or a
+              // process that died without hanging up can never leave a silent twin behind.
+              const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers)
+              if (shown.kind === 'agent' && shown.name !== 'an agent') {
+                for (const p of this.line?.participants(code) ?? []) {
+                  if (p.leg !== who.leg && shownParticipant(p, this.agentNumbers, this.config.knownCallers).name === shown.name) void this.line?.kick(code, p.leg)
+                }
+              }
             },
             onLeave: (code, who, info) => {
               store.dropLeg(code, who.leg, info.callers === 0)
@@ -206,6 +214,7 @@ export class GroupCallService {
     } catch {
       return false
     }
+    this.recordQuality(event)
     // Answered asynchronously: Telnyx wants a quick 200, and the commands go back on their own.
     void this.line.handle(event).catch((e) => console.error('group call:', e))
     return true
@@ -237,7 +246,39 @@ export class GroupCallService {
     const trusted = new Set(Object.values(this.config.knownCallers ?? {}))
     // The last few lines with who said them, so an agent can tell whether a request came from someone it works for.
     const recent = this.store.transcript(code, { limit: 8 }).map((l) => ({ who: l.who, kind: l.kind, text: l.text, at: l.at, trusted: l.kind === 'person' && trusted.has(l.who) }))
-    return { people: live.filter((p) => p.kind === 'person').length, agents: live.filter((p) => p.kind === 'agent').length, live, recent }
+    // The room's record is the agents' memory: a rejoining agent reads it and does not start over (SPEC-0001).
+    const history = this.store.transcript(code, { limit: 80 }).map((l) => ({ who: l.who, kind: l.kind, text: l.text, at: l.at }))
+    return { people: live.filter((p) => p.kind === 'person').length, agents: live.filter((p) => p.kind === 'agent').length, live, recent, history, agentSeen: this.store.agentSeen(code) }
+  }
+
+  /**
+   * Telnyx's call_quality_stats on a leg's hangup: kept per leg, and a poor one is flagged in the
+   * room's activity, so a breaking-up line is visible and blamed on the right leg.
+   */
+  private recordQuality(event: TelnyxEvent): void {
+    if (event.event_type !== 'call.hangup' || !this.line) return
+    const p = event.payload ?? {}
+    const leg = typeof p['call_control_id'] === 'string' ? p['call_control_id'] : ''
+    const stats = p['call_quality_stats'] as Record<string, Record<string, unknown>> | undefined
+    if (!leg || !stats) return
+    const num = (v: unknown) => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v))
+    for (const r of this.line.list()) {
+      const who = this.line.participants(r.code).find((x) => x.leg === leg)
+      if (!who) continue
+      const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers)
+      const q = {
+        code: r.code,
+        leg,
+        who: shown.name,
+        mosIn: num(stats['inbound']?.['mos']),
+        mosOut: num(stats['outbound']?.['mos']),
+        jitterMs: num(stats['inbound']?.['jitter_max_variance'] ?? stats['inbound']?.['jitter']),
+        lossPct: num(stats['inbound']?.['packet_loss'] ?? stats['inbound']?.['packet_loss_percent']),
+      }
+      this.store.addQuality(q)
+      const poor = (q.mosIn !== null && q.mosIn < 3.6) || (q.mosOut !== null && q.mosOut < 3.6) || (q.lossPct !== null && q.lossPct > 1)
+      if (poor) this.store.addEvent({ code: r.code, kind: 'quality', who: shown.name, text: `poor audio: MOS in ${q.mosIn ?? '?'} out ${q.mosOut ?? '?'}, loss ${q.lossPct ?? '?'}%` })
+    }
   }
 
   live(code: string) {
