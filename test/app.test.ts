@@ -44,7 +44,7 @@ function setup() {
       dialIn: DIAL_IN,
       agentOperators: ['op@example.com'],
       agentWorkerKey: 'worker-secret',
-      agentCallerId: AGENT_CALLER,
+      agentCallerIds: { riotcoder: AGENT_CALLER, cha0spunk: '+15107667447' },
       fetch: telnyx.fetch,
     },
   })
@@ -259,4 +259,64 @@ test('what people and agents say is written down live, per speaker, and served b
   const newer = (await (await call('gc_op', 'GET', `/api/v1/rooms/${room.code}/transcript?after=${api.lines[1].id}`)).json()) as any
   expect(newer.lines.map((l: any) => l.text)).toEqual(['ok'])
   expect((await call('gc_guest', 'GET', `/api/v1/rooms/${room.code}/transcript`)).status).toBe(404)
+})
+
+describe('a deploy does not touch a live room', () => {
+  test('a new process restores who is on the line, with names, and keeps the same conference', async () => {
+    const keys = telnyxKeys()
+    const joined = new Set<string>()
+    const posts: string[] = []
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const path = String(url).replace('https://api.telnyx.com/v2', '')
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') posts.push(path)
+      if (method === 'POST' && path === '/conferences') return new Response(JSON.stringify({ data: { id: 'conf-1' } }))
+      if (method === 'GET' && path === '/conferences/conf-1') return new Response(JSON.stringify({ data: { id: 'conf-1', status: 'in_progress' } }))
+      if (method === 'GET' && path.startsWith('/conferences/conf-1/participants')) return new Response(JSON.stringify({ data: [...joined].map((id) => ({ call_control_id: id, status: 'joined' })) }))
+      return new Response('{}')
+    }) as unknown as typeof globalThis.fetch
+    const store = new Store(':memory:', new Sealer('k'.repeat(32)))
+    const config = { key: 'k'.repeat(32), clientId: 'cp', coinpayBase: 'https://coinpayportal.com', telnyxApiKey: 'KEY', telnyxPublicKey: keys.publicKey, dialIn: DIAL_IN, agentCallerIds: { riotcoder: AGENT_CALLER, cha0spunk: '+15107667447' }, agentOperators: ['op@example.com'], agentWorkerKey: 'w', fetch }
+    const op = store.upsertUser('sub-op', 'Anthony', 'op@example.com', { accessToken: 'a', refreshToken: null, expiresAt: 0 })
+    const signedEvent = (app: any) => async (event_type: string, payload: Record<string, unknown>) => {
+      const raw = JSON.stringify({ data: { event_type, payload } })
+      const ts = String(Math.floor(Date.now() / 1000))
+      await app.request('/api/telnyx/voice', { method: 'POST', body: raw, headers: { 'telnyx-signature-ed25519': signMessage(null, Buffer.from(`${ts}|${raw}`), keys.privateKey).toString('base64'), 'telnyx-timestamp': ts } })
+      await new Promise((r) => setTimeout(r, 5))
+    }
+
+    const first = createApp({ store, config, origin: 'https://t' })
+    const room = first.svc.createRoom(op, { name: 'Standup' })
+    // Both agents asked in: each is named by its own number, whatever order they arrive in.
+    first.svc.inviteAgent(op, room.code, 'riotcoder')
+    first.svc.inviteAgent(op, room.code, 'cha0spunk')
+    expect(first.svc.nextInvite()?.from).toBe(AGENT_CALLER)
+    expect(first.svc.nextInvite()?.from).toBe('+15107667447')
+    const ev1 = signedEvent(first.app)
+    for (const [leg, from] of [['leg-cha', '+15107667447'], ['leg-riot', AGENT_CALLER], ['leg-me', '+15550001173']] as const) {
+      await ev1('call.initiated', { call_control_id: leg, direction: 'incoming', from })
+      await ev1('call.gather.ended', { call_control_id: leg, digits: room.code })
+      joined.add(leg)
+    }
+    expect(first.svc.live(room.code).map((p) => p.name)).toEqual(['cha0spunk', 'riotcoder', 'caller ending 73'])
+
+    // The deploy: a new process on the same database.
+    const second = createApp({ store, config, origin: 'https://t' })
+    expect(await second.svc.restore()).toEqual({ rooms: 1, legs: 3 })
+    expect(second.svc.live(room.code).map((p) => p.name).sort()).toEqual(['caller ending 73', 'cha0spunk', 'riotcoder'])
+    // Lines keep their speakers, and the next caller joins the same conference.
+    const ev2 = signedEvent(second.app)
+    await ev2('call.transcription', { call_control_id: 'leg-riot', transcription_data: { transcript: 'still here', is_final: true } })
+    expect(store.transcript(room.code).map((l) => `${l.who}: ${l.text}`)).toEqual(['riotcoder: still here'])
+    await ev2('call.initiated', { call_control_id: 'leg-late', direction: 'incoming', from: '+15550002222' })
+    await ev2('call.gather.ended', { call_control_id: 'leg-late', digits: room.code })
+    expect(posts.filter((p) => p === '/conferences').length).toBe(1)
+    expect(posts).toContain('/conferences/conf-1/actions/join')
+    expect(second.svc.roomStatus(room.code)).toMatchObject({ people: 2, agents: 2 })
+
+    // The worker can ask whether people are still there; nobody else can.
+    expect((await second.app.request(`/api/v1/agent-queue/rooms/${room.code}`)).status).toBe(401)
+    const status = (await (await second.app.request(`/api/v1/agent-queue/rooms/${room.code}`, { headers: { authorization: 'Bearer w' } })).json()) as any
+    expect(status.people).toBe(2)
+  })
 })
