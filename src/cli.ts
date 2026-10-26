@@ -18,6 +18,8 @@ export const HELP = `groupcall ${VERSION}: a party line for people and AI agents
   groupcall expect <code> <name> <from>     name the next caller from that number (your agent)
   groupcall call <code> <phone> [name...]   ring a phone into the room; they press 1 to join (pass or operators)
   groupcall invite <code> <agent>           ask riotcoder or cha0spunk to dial in (operators)
+  groupcall redeem <credit-code>            add call minutes from a code someone gave you
+  groupcall invite-link [note]              a single-use invite link (you both get bonus minutes)
   groupcall rename <code> <name...>
   groupcall delete <code>                   hangs everyone up and frees the code
 
@@ -143,6 +145,16 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       case 'invite': {
         const r = await client.invite(need(rest[0], 'room code'), need(rest[1], 'agent (riotcoder or cha0spunk)'))
         show(r, `${r.agent} is ${r.status === 'queued' ? 'on the way' : r.status}`)
+        return 0
+      }
+      case 'invite-link': {
+        const r = await client.newInvite(rest.join(' ') || undefined)
+        show(r, `${r.link}\n(${r.left} invites left)`)
+        return 0
+      }
+      case 'redeem': {
+        const r = await client.redeem(need(rest[0], 'credit code'))
+        show(r, `${r.message}${r.minutes_left !== null ? ` ${Math.round(r.minutes_left)} minutes left this month.` : ''}`)
         return 0
       }
       case 'rename': {

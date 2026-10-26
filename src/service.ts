@@ -8,6 +8,8 @@
  * about them, and queues our agents when somebody asks one to dial in.
  */
 import { CoinPay } from '@profullstack/coinpay-onboard'
+import { Credits, sqliteStore } from '@profullstack/redeem-credits'
+import { Affiliates, sqliteStore as affiliateStore } from '@profullstack/affiliates'
 import { GroupCall, newRoomCode, normalNumber, type Participant, type TelnyxEvent } from '@profullstack/group-call'
 import type { AgentInvite, Line, Pass, Room, RoomEvent, Store, User } from './db.js'
 
@@ -53,6 +55,8 @@ export type Config = {
    * carry that name, and agents may take work only from them.
    */
   knownCallers?: Record<string, string>
+  /** Free call minutes a month per room owner (operators are unlimited). */
+  freeMinutes?: number
   /** Transcribe every leg (Telnyx, per minute per leg). On by default. */
   transcribe?: boolean
   origin?: string
@@ -66,6 +70,10 @@ export const AGENTS: Record<string, { about: string; voice: string }> = {
 }
 
 export const FREE_ROOMS = 3
+/** Invite links each person can hand out. Scarce on purpose: an invite should mean something. */
+export const INVITES_PER_PERSON = 3
+/** Minutes both people get when an invite is used. */
+export const INVITE_BONUS_MINUTES = 60
 export const PASS_ROOMS = 50
 export const PASS_USD = 5
 export const PASS_DAYS = 30
@@ -100,6 +108,10 @@ export function shownParticipant(p: Participant, agentNumbers: Record<string, st
 
 export class GroupCallService {
   readonly line: GroupCall | null
+  /** Redeemable credit codes (@profullstack/redeem-credits): extra call minutes, one-off or monthly. */
+  readonly credits: Credits
+  /** Scarce invite codes and affiliate links (@profullstack/affiliates). */
+  readonly affiliates: Affiliates
   private readonly listeners = new Map<string, Set<(e: LiveEvent) => void>>()
   private readonly store: Store
   readonly config: Config
@@ -111,6 +123,8 @@ export class GroupCallService {
     this.store = store
     this.config = config
     this.agentNumbers = config.agentCallerIds ?? {}
+    this.credits = new Credits(sqliteStore(store.db as never))
+    this.affiliates = new Affiliates(affiliateStore(store.db as never), { defaultQuota: INVITES_PER_PERSON })
     this.line =
       config.telnyxApiKey && config.telnyxPublicKey
         ? new GroupCall({
@@ -123,9 +137,11 @@ export class GroupCallService {
             ...(config.telnyxVoiceKeyRef ? { voiceSettings: { api_key_ref: config.telnyxVoiceKeyRef } } : {}),
             maxParticipants: 20,
             ...(config.fetch ? { fetch: config.fetch } : {}),
-            onCode: (code) => {
+            onCode: async (code) => {
               const room = store.room(code)
               if (!room) return { reject: 'That is not a room.' }
+              const owner = store.user(room.sub)
+              if (owner && (await this.minutes(owner)).left <= 0) return { reject: 'This room has used its call minutes for the month.' }
               store.touchRoom(code)
               return { welcome: `Welcome to ${room.name}. ` }
             },
@@ -144,6 +160,7 @@ export class GroupCallService {
             onLeave: (code, who, info) => {
               store.dropLeg(code, who.leg, info.callers === 0)
               this.record(code, 'leave', who, info.callers)
+              void this.charge(code, who.joinedAt).catch((e) => console.error('group.call: minutes:', e))
             },
             ...(config.transcribe === false ? {} : { transcribe: { engine: 'Deepgram', language: 'en' } }),
             onTranscript: (code, who, text) => {
@@ -176,6 +193,59 @@ export class GroupCallService {
         const said = new Set(words(l.text))
         return heard.filter((w) => said.has(w)).length / heard.length >= 0.6
       })
+  }
+
+  /** "2026-10": the calendar month (UTC) minutes are counted in. */
+  static month(at = Date.now()): string {
+    return new Date(at).toISOString().slice(0, 7)
+  }
+
+  /**
+   * A person's call minutes this month: the free allowance, plus credits they redeemed
+   * (one-off or monthly), less what their rooms used. Operators have no limit.
+   */
+  async minutes(user: User): Promise<{ used: number; free: number; credits: number; left: number; unlimited: boolean }> {
+    const used = this.store.minutesUsed(user.sub, GroupCallService.month())
+    const free = this.config.freeMinutes ?? 300
+    const credits = await this.credits.balance(user.sub, 'minutes')
+    if (this.mayInviteAgents(user)) return { used, free, credits, left: Number.POSITIVE_INFINITY, unlimited: true }
+    return { used, free, credits, left: Math.max(0, free - used) + credits, unlimited: false }
+  }
+
+  /** A leg left: its minutes go to the room owner, and what is over the free allowance comes out of credits. */
+  private async charge(code: string, joinedAt: number): Promise<void> {
+    const room = this.store.room(code)
+    if (!room || !joinedAt) return
+    const minutes = Math.max(1, Math.ceil((Date.now() - joinedAt) / 60_000))
+    const free = this.config.freeMinutes ?? 300
+    const before = this.store.minutesUsed(room.sub, GroupCallService.month())
+    const after = this.store.addMinutes(room.sub, GroupCallService.month(), minutes)
+    const over = Math.min(minutes, Math.max(0, after - Math.max(before, free)))
+    if (over > 0) await this.credits.spend(room.sub, 'minutes', Math.min(over, await this.credits.balance(room.sub, 'minutes')), `room ${code}`)
+  }
+
+  /**
+   * A new person signed in through an invite: the invite is spent, and both they and the
+   * person who invited them get bonus minutes. False if the invite did not work.
+   */
+  async acceptInvite(code: string, user: User): Promise<{ ok: boolean; reason?: string; inviterId?: string }> {
+    const r = await this.affiliates.redeemInvite(code, user.sub)
+    if (!r.ok) return { ok: false, reason: r.reason }
+    const bonus = { unit: 'minutes', amount: INVITE_BONUS_MINUTES } as const
+    await this.credits.grant(user.sub, bonus, `invited by ${r.inviterId}`)
+    await this.credits.grant(r.inviterId, bonus, `invited ${user.sub}`)
+    return { ok: true, inviterId: r.inviterId }
+  }
+
+  /** Redeem a credit code for the signed-in person. */
+  async redeem(user: User, code: string): Promise<string> {
+    const r = await this.credits.redeem(code, user.sub)
+    if (!r.ok) {
+      const why: Record<string, string> = { invalid: 'That code is not valid.', expired: 'That code has expired.', used_up: 'That code has been used.', already_redeemed: 'You already redeemed that code.', revoked: 'That code was withdrawn.' }
+      throw new UserError(why[r.reason] ?? 'That code did not work.', 'code')
+    }
+    const g = r.grant
+    return g.every === 'month' ? `Added ${g.amount} ${g.unit} every month${g.months ? ` for ${g.months} months` : ''}.` : `Added ${g.amount} ${g.unit}.`
   }
 
   /** A line into the transcript, and out to every open room page. */

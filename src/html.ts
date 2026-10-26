@@ -9,7 +9,7 @@ import type { AgentInvite, Line, Pass, Room, RoomEvent, User } from './db.js'
 import { pitFooter } from './pit-footer.js'
 import { RING_PLACEHOLDER } from './ring.js'
 import { ringFooter } from './ring-footer.js'
-import { AGENTS, CODE_LENGTH, FREE_ROOMS, formatNumber, PASS_DAYS, PASS_ROOMS, PASS_USD, telLink } from './service.js'
+import { AGENTS, CODE_LENGTH, FREE_ROOMS, formatNumber, INVITE_BONUS_MINUTES, PASS_DAYS, PASS_ROOMS, PASS_USD, telLink } from './service.js'
 
 export const SITE = 'https://group.call.pit.world'
 export const REPO = 'https://github.com/moshcoder/group.call'
@@ -67,6 +67,7 @@ ${RING_PLACEHOLDER}
   <a class="brand" href="/">${LOGO}<span>group<b>.</b>call</span></a>
   <nav aria-label="Site">
     <a href="/rooms">Rooms</a>
+    ${signedIn ? '<a href="/invites">Invites</a>' : ''}
     <a href="/help">Help</a>
     ${signedIn ? `<a href="/me">Account</a><form method="post" action="/auth/logout"><input type="hidden" name="csrf" value="${esc(o.ctx.csrf)}"><button class="linkish">Sign out</button></form>` : '<a href="/auth/start">Sign in</a>'}
   </nav>
@@ -237,7 +238,8 @@ ${ownerTools}`,
   })
 }
 
-export function mePage(ctx: Ctx, data: { apiKey?: string; flash?: string }): string {
+export function mePage(ctx: Ctx, data: { apiKey?: string; flash?: string; minutes?: { used: number; free: number; credits: number; left: number; unlimited: boolean } }): string {
+  const m = data.minutes
   const u = ctx.user!
   return layout({
     ctx,
@@ -248,6 +250,11 @@ export function mePage(ctx: Ctx, data: { apiKey?: string; flash?: string }): str
     body: `<h1>Account</h1>
 ${flashNote(data.flash)}
 <p>Signed in with CoinPay as <strong>${esc(u.name || u.email)}</strong>${u.email ? ` (${esc(u.email)})` : ''}.</p>
+<section>
+  <h2>Call minutes</h2>
+  ${m ? (m.unlimited ? `<p>${m.used} minutes used this month. No limit on this account.</p>` : `<p><strong>${Math.round(m.left)}</strong> minutes left this month: ${m.free} free${m.credits ? ` + ${m.credits} from codes` : ''}, ${m.used} used.</p>`) : ''}
+  <form method="post" action="/me/redeem" class="row">${csrfField(ctx)}<input name="code" required placeholder="Have a code? CR-XXXX-XXXX-XXXX" aria-label="Credit code" autocomplete="off"><button>Redeem</button></form>
+</section>
 <section>
   <h2>API key</h2>
   <p>For the CLI, the MCP server and the API. Making a new key retires the old one.</p>
@@ -260,6 +267,43 @@ claude mcp add groupcall -e GROUPCALL_KEY=gc_… -- bunx @profullstack/groupcall
 <section>
   <h2>Delete your account</h2>
   <form method="post" action="/me/delete">${csrfField(ctx)}<button class="danger">Delete my account and rooms</button></form>
+</section>`,
+  })
+}
+
+export function invitedPage(ctx: Ctx): string {
+  return layout({
+    ctx,
+    path: '/',
+    noindex: true,
+    title: "You're invited to group.call",
+    description: 'A party line for people and AI agents.',
+    body: `<section class="hero">
+  <p class="label">Invite</p>
+  <h1>You're invited to group.call.</h1>
+  <p class="lede">A party line for people and AI agents: make a room, get a ${CODE_LENGTH}-digit code, and everyone dials one number. Sign in with CoinPay to accept. You and whoever invited you both get ${INVITE_BONUS_MINUTES} extra minutes.</p>
+  ${ctx.user ? '<p class="muted">You are already signed in, so this invite is for someone new. Pass it on.</p>' : signInButton('rooms', 'Accept: sign in with CoinPay')}
+</section>`,
+  })
+}
+
+export function invitesPage(ctx: Ctx, data: { quota: { total: number; used: number; left: number }; invites: { id: string; createdAt: number; expiresAt: number | null; usedBy: string | null; usedAt: number | null; note: string }[]; affiliate: string; link?: string; error?: string }): string {
+  return layout({
+    ctx,
+    path: '/invites',
+    noindex: true,
+    title: 'Invites · group.call',
+    description: 'Your invite links.',
+    body: `<h1>Invites</h1>
+${flashNote(data.error, true)}
+<p>You have <strong>${data.quota.left}</strong> of ${data.quota.total} invites left. Each link works once. When someone signs in through it, you both get ${INVITE_BONUS_MINUTES} extra minutes.</p>
+${data.link ? `<p class="note">Your new invite link, shown once:</p><pre class="copyable"><code>${esc(data.link)}</code></pre><p><button class="secondary" data-copy="${esc(data.link)}">Copy the link</button></p>` : ''}
+${data.quota.left > 0 ? `<form method="post" action="/invites" class="row">${csrfField(ctx)}<input name="note" maxlength="80" placeholder="Who is it for? (just for you)" aria-label="Note"><button>Make an invite link</button></form>` : ''}
+${data.invites.length ? `<ul class="rooms">${data.invites.map((i) => `<li><span>${esc(i.note || 'invite')}</span> <span class="muted">${i.usedAt ? `used ${day(i.usedAt)}` : i.expiresAt && i.expiresAt < Date.now() ? 'expired' : `open, made ${day(i.createdAt)}`}</span></li>`).join('')}</ul>` : ''}
+<section>
+  <h2>Your link for everyone else</h2>
+  <p>Share this anywhere. People who sign up through it are credited to you.</p>
+  <pre class="copyable"><code>${esc(data.affiliate)}</code></pre><p><button class="secondary" data-copy="${esc(data.affiliate)}">Copy</button></p>
 </section>`,
   })
 }

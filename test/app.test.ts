@@ -456,3 +456,50 @@ describe('calling someone in', () => {
     expect(telnyx.calls.some((c) => c.path === '/calls')).toBe(false)
   })
 })
+
+describe('call minutes and credit codes', () => {
+  test('a free account runs out, its room refuses callers, and a monthly credit code opens it again', async () => {
+    const { call, event, store, svc, telnyx, guest } = setup()
+    const room = (await (await call('gc_guest', 'POST', '/api/v1/rooms', { name: 'Preshy' })).json()) as any
+    // The whole free allowance, used.
+    store.addMinutes(guest.sub, (svc.constructor as any).month(), 300)
+    expect((await svc.minutes(guest)).left).toBe(0)
+    await event('call.initiated', { call_control_id: 'leg-1', direction: 'incoming', from: '+15550001111' })
+    await event('call.gather.ended', { call_control_id: 'leg-1', digits: room.code })
+    expect(telnyx.calls.at(-1)?.body.payload).toContain('used its call minutes')
+    expect(svc.line!.callersIn(room.code)).toBe(0)
+
+    const minted = await svc.credits.mint({ grant: { unit: 'minutes', amount: 1000, every: 'month', months: null }, label: 'preshy' })
+    const r = (await (await call('gc_guest', 'POST', '/api/v1/redeem', { code: minted.code.toLowerCase() })).json()) as any
+    expect(r.message).toBe('Added 1000 minutes every month.')
+    expect(r.minutes_left).toBe(1000)
+    const again = await call('gc_guest', 'POST', '/api/v1/redeem', { code: minted.code })
+    expect(again.status).toBe(400)
+    expect(((await again.json()) as any).error).toBe('You already redeemed that code.')
+
+    await event('call.gather.ended', { call_control_id: 'leg-1', digits: room.code })
+    expect(svc.line!.callersIn(room.code)).toBe(1)
+  })
+
+  test('operators have no limit', async () => {
+    const { svc, op } = setup()
+    expect((await svc.minutes(op)).unlimited).toBe(true)
+  })
+})
+
+test('an invite link brings someone new in, once, and both of them get bonus minutes', async () => {
+  const { call, svc, store, op, app } = setup()
+  const made = (await (await call('gc_op', 'POST', '/api/v1/invites', { note: 'for preshy' })).json()) as any
+  expect(made.link).toContain('/i/')
+  expect(made.left).toBe(2)
+  const newbie = store.upsertUser('sub-new', 'New', 'new@example.com', { accessToken: 'a', refreshToken: null, expiresAt: 0 })
+  expect(await svc.acceptInvite(made.code, newbie)).toMatchObject({ ok: true, inviterId: op.sub })
+  expect(await svc.credits.balance(newbie.sub, 'minutes')).toBe(60)
+  expect(await svc.credits.balance(op.sub, 'minutes')).toBe(60)
+  const other = store.upsertUser('sub-other', 'Other', 'o@example.com', { accessToken: 'a', refreshToken: null, expiresAt: 0 })
+  expect((await svc.acceptInvite(made.code, other)).ok).toBe(false)
+  // The landing page remembers the invite for sign-in.
+  const landing = await app.request(`/i/${made.code}`)
+  expect(landing.headers.get('set-cookie')).toContain('gc_invite=')
+  expect(await landing.text()).toContain("You're invited to group.call")
+})

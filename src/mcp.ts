@@ -56,6 +56,8 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
     wrap(({ code, phone, name }) => client.callPhone(code, phone, name)),
   )
   server.tool('invite_agent', "Ask one of the instance's own agents (riotcoder or cha0spunk) to dial in to a room. Operators only.", { code, agent: z.enum(['riotcoder', 'cha0spunk']) }, wrap(({ code, agent }) => client.invite(code, agent)))
+  server.tool('create_invite', 'Make a single-use invite link to group.call (each person has a few). Whoever signs in through it and you both get bonus minutes.', { note: z.string().max(80).optional() }, wrap(({ note }) => client.newInvite(note)))
+  server.tool('redeem_code', 'Redeem a credit code (extra call minutes, one-off or every month).', { code: z.string().min(6) }, wrap(({ code }) => client.redeem(code)))
   server.tool('rename_room', 'Rename a room.', { code, name: z.string().min(1).max(60) }, wrap(({ code, name }) => client.rename(code, name)))
   server.tool('delete_room', 'Delete a room: everyone on the line is hung up and the code is freed.', { code }, wrap(({ code }) => client.remove(code)))
   return server

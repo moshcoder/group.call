@@ -14,7 +14,7 @@ import { authorizeUrl, exchangeCode, pkce } from '@profullstack/coinpay-onboard/
 import { CoinPay, PAID_EVENTS, verifyWebhook, type WebhookEvent } from '@profullstack/coinpay-onboard'
 import { sameSecret } from '@profullstack/group-call'
 import { Sealer, Store, type Room, type User } from './db.js'
-import { helpPage, homePage, installScript, mePage, messagePage, passPage, roomPage, roomsPage, SITE, type Ctx } from './html.js'
+import { helpPage, homePage, installScript, invitedPage, invitesPage, mePage, messagePage, passPage, roomPage, roomsPage, SITE, type Ctx } from './html.js'
 import { startPitFooterRefresh } from './pit-footer.js'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh } from './ring.js'
 import { ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
@@ -131,6 +131,45 @@ export function createApp(deps: Deps) {
 
   // ---- Sign in with CoinPay -----------------------------------------------------
 
+  // ---- invites and affiliate links ------------------------------------------------
+
+  const INVITE = 'gc_invite'
+  const REF = 'gc_ref'
+  /** Anyone arriving with ?ref=<affiliate code> is remembered for when they sign in (first touch). */
+  app.use('*', async (c, next) => {
+    const ref = c.req.query('ref')
+    if (ref && /^[A-Za-z0-9-]{4,40}$/.test(ref) && !getCookie(c, REF)) setCookie(c, REF, ref, { httpOnly: true, secure: deps.secureCookies ?? true, sameSite: 'Lax', path: '/', maxAge: 30 * 86400 })
+    await next()
+  })
+
+  app.get('/i/:code', (c) => {
+    const code = c.req.param('code')
+    if (!/^[A-Za-z0-9-]{6,40}$/.test(code)) return page(c, messagePage(ctxOf(c), { title: 'Not an invite', message: 'That invite link is not right.' }), 404)
+    setCookie(c, INVITE, code, { httpOnly: true, secure: deps.secureCookies ?? true, sameSite: 'Lax', path: '/', maxAge: 7 * 86400 })
+    return page(c, invitedPage(ctxOf(c)))
+  })
+
+  app.get('/invites', async (c) => {
+    const user = need(c, 'invites')
+    if (user instanceof Response) return user
+    return page(c, invitesPage(ctxOf(c), { quota: await svc.affiliates.quota(user.sub), invites: await svc.affiliates.invites(user.sub), affiliate: `${ORIGIN}/?ref=${await svc.affiliates.affiliateCode(user.sub)}` }))
+  })
+
+  app.post('/invites', async (c) => {
+    const user = need(c, 'invites')
+    if (user instanceof Response) return user
+    const form = await formOf(c)
+    const view = async (extra: { link?: string; error?: string }, status = 200) =>
+      page(c, invitesPage(ctxOf(c), { quota: await svc.affiliates.quota(user.sub), invites: await svc.affiliates.invites(user.sub), affiliate: `${ORIGIN}/?ref=${await svc.affiliates.affiliateCode(user.sub)}`, ...extra }), status)
+    if (!csrfOk(c, form.csrf)) return view({ error: 'That form went stale. Try again.' }, 400)
+    try {
+      const invite = await svc.affiliates.createInvite(user.sub, String(form.note ?? '').slice(0, 80))
+      return view({ link: `${ORIGIN}/i/${invite.code}` })
+    } catch (e) {
+      return view({ error: message(e) === 'no invites left' ? 'You have used all your invites.' : message(e) }, 400)
+    }
+  })
+
   app.get('/auth/start', (c) => {
     if (!authLimit.allow(`auth:${ip(c)}`)) return page(c, messagePage(ctxOf(c), { title: 'Slow down', message: 'Too many sign-in attempts. Try again in a few minutes.' }), 429)
     // Where to land after sign-in rides in the state CoinPay echoes back: "<random>.<path>".
@@ -154,8 +193,15 @@ export function createApp(deps: Deps) {
     try {
       const tokens = await exchangeCode({ code, verifier: saved.verifier, clientId: config.clientId, ...(config.clientSecret ? { clientSecret: config.clientSecret } : {}), redirectUri: saved.redirectUri, base: config.coinpayBase, ...(config.fetch ? { fetch: config.fetch } : {}) })
       const me = await new CoinPay({ base: config.coinpayBase, token: tokens.accessToken, ...(config.fetch ? { fetch: config.fetch } : {}) }).userinfo()
+      const isNew = !store.user(me.sub)
       const user = store.upsertUser(me.sub, me.name ?? '', (me.email ?? '').toLowerCase(), tokens)
       const sid = store.newSession(user.sub)
+      // Signed in through an invite or an affiliate link: credit whoever brought them.
+      const invite = getCookie(c, INVITE)
+      if (invite && isNew) await svc.acceptInvite(invite, user).catch(() => null)
+      if (invite) deleteCookie(c, INVITE, { path: '/' })
+      const ref = getCookie(c, REF)
+      if (ref && isNew) await svc.affiliates.attribute(ref, user.sub).catch(() => null)
       setCookie(c, SESSION, sid, { httpOnly: true, secure: deps.secureCookies ?? true, sameSite: 'Lax', path: '/', maxAge: 30 * 86400 })
       return c.redirect(`/${(state.split('.')[1] ?? 'rooms').replace('~', '/')}`)
     } catch (e) {
@@ -343,20 +389,34 @@ export function createApp(deps: Deps) {
 
   // ---- account -----------------------------------------------------------------
 
-  app.get('/me', (c) => {
+  app.get('/me', async (c) => {
     const user = need(c, 'me')
-    return user instanceof Response ? user : page(c, mePage(ctxOf(c), {}))
+    return user instanceof Response ? user : page(c, mePage(ctxOf(c), { minutes: await svc.minutes(user) }))
+  })
+
+  app.post('/me/redeem', async (c) => {
+    const user = need(c, 'me')
+    if (user instanceof Response) return user
+    const form = await formOf(c)
+    if (!csrfOk(c, form.csrf)) return page(c, mePage(ctxOf(c), { flash: 'That form went stale. Try again.', minutes: await svc.minutes(user) }), 400)
+    if (!writeLimit.allow(`redeem:${user.sub}`)) return page(c, mePage(ctxOf(c), { flash: 'Too many tries. Wait a few minutes.', minutes: await svc.minutes(user) }), 429)
+    try {
+      const flash = await svc.redeem(user, form.code ?? '')
+      return page(c, mePage(ctxOf(c), { flash, minutes: await svc.minutes(user) }))
+    } catch (e) {
+      return page(c, mePage(ctxOf(c), { flash: message(e), minutes: await svc.minutes(user) }), statusOf(e))
+    }
   })
 
   app.post('/me/:action{(key|delete)}', async (c) => {
     const user = need(c, 'me')
     if (user instanceof Response) return user
     const form = await formOf(c)
-    if (!csrfOk(c, form.csrf)) return page(c, mePage(ctxOf(c), { flash: 'That form went stale. Try again.' }), 400)
+    if (!csrfOk(c, form.csrf)) return page(c, mePage(ctxOf(c), { flash: 'That form went stale. Try again.', minutes: await svc.minutes(user) }), 400)
     if (c.req.param('action') === 'key') {
       const key = newApiKey()
       store.setApiKey(user.sub, key)
-      return page(c, mePage({ ...ctxOf(c), user: store.user(user.sub) }, { apiKey: key }))
+      return page(c, mePage({ ...ctxOf(c), user: store.user(user.sub) }, { apiKey: key, minutes: await svc.minutes(user) }))
     }
     for (const r of store.rooms(user.sub)) await svc.deleteRoom(user, r.code).catch(() => {})
     store.deleteUser(user.sub)
@@ -394,11 +454,35 @@ export function createApp(deps: Deps) {
     ...(full ? { quality: store.quality(r.code, 10).map((q) => ({ who: q.who, mos_in: q.mosIn, mos_out: q.mosOut, jitter_ms: q.jitterMs, loss_pct: q.lossPct, at: new Date(q.at).toISOString() })), live: svc.live(r.code), activity: svc.events(r.code).slice(0, 20).map((e) => ({ kind: e.kind, who: e.who, text: e.text || undefined, at: new Date(e.at).toISOString() })) } : {}),
   })
 
+  app.post(
+    '/api/v1/redeem',
+    api(async (c, u) => {
+      const message = await svc.redeem(u, String((await body(c)).code ?? ''))
+      const m = await svc.minutes(u)
+      return c.json({ ok: true, message, minutes_left: m.unlimited ? null : m.left })
+    }),
+  )
+  app.get(
+    '/api/v1/invites',
+    api(async (c, u) => c.json({ quota: await svc.affiliates.quota(u.sub), invites: await svc.affiliates.invites(u.sub), affiliate_link: `${ORIGIN}/?ref=${await svc.affiliates.affiliateCode(u.sub)}` })),
+  )
+  app.post(
+    '/api/v1/invites',
+    api(async (c, u) => {
+      try {
+        const invite = await svc.affiliates.createInvite(u.sub, String((await body(c)).note ?? '').slice(0, 80))
+        return c.json({ link: `${ORIGIN}/i/${invite.code}`, code: invite.code, expires_at: invite.expiresAt ? new Date(invite.expiresAt).toISOString() : null, left: (await svc.affiliates.quota(u.sub)).left }, 201)
+      } catch (e) {
+        return c.json({ error: message(e) === 'no invites left' ? 'You have used all your invites.' : message(e) }, 400)
+      }
+    }),
+  )
   app.get(
     '/api/v1/me',
-    api((c, u) => {
+    api(async (c, u) => {
       const until = store.passUntil(u.sub)
-      return c.json({ name: u.name, email: u.email, dial_in: config.dialIn, pass_until: until ? new Date(until).toISOString() : null, room_limit: svc.roomLimit(u), can_invite_agents: svc.mayInviteAgents(u), can_call_phones: svc.mayCallPhones(u), agents: Object.keys(AGENTS), rooms: store.rooms(u.sub).map((r) => roomJson(r)) })
+      const m = await svc.minutes(u)
+      return c.json({ name: u.name, email: u.email, dial_in: config.dialIn, minutes: { used: m.used, free: m.free, credits: m.credits, left: m.unlimited ? null : m.left, unlimited: m.unlimited }, pass_until: until ? new Date(until).toISOString() : null, room_limit: svc.roomLimit(u), can_invite_agents: svc.mayInviteAgents(u), can_call_phones: svc.mayCallPhones(u), agents: Object.keys(AGENTS), rooms: store.rooms(u.sub).map((r) => roomJson(r)) })
     }),
   )
   app.get('/api/v1/rooms', api((c, u) => c.json({ rooms: store.rooms(u.sub).map((r) => roomJson(r)) })))
@@ -560,6 +644,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
           .filter((kv): kv is [string, string] => kv.length === 2 && Boolean(kv[0]) && Boolean(kv[1])),
       ),
       transcribe: (env.GROUPCALL_TRANSCRIBE ?? '1') !== '0',
+      freeMinutes: Number(env.GROUPCALL_FREE_MINUTES ?? 300),
     },
   })
   const trustProxy = (env.GROUPCALL_TRUST_PROXY ?? '1') === '1'

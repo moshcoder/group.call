@@ -86,6 +86,14 @@ export class GroupCallClient {
   callPhone(code: string, phone: string, name?: string): Promise<{ ringing: boolean; to: string }> {
     return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/call`, { phone, ...(name ? { name } : {}) })
   }
+  /** A new single-use invite link (you have a few). */
+  newInvite(note?: string): Promise<{ link: string; code: string; expires_at: string | null; left: number }> {
+    return this.call('POST', '/api/v1/invites', note ? { note } : {})
+  }
+  /** Redeem a credit code (extra call minutes). */
+  redeem(code: string): Promise<{ ok: boolean; message: string; minutes_left: number | null }> {
+    return this.call('POST', '/api/v1/redeem', { code })
+  }
   /** Ask one of our agents (riotcoder, cha0spunk) to dial in. */
   invite(code: string, agent: string): Promise<{ id: string; agent: string; status: string }> {
     return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/agents`, { agent })
