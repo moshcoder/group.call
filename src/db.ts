@@ -16,7 +16,10 @@ export type User = { sub: string; name: string; email: string; apiKeyHash: strin
 export type Room = { code: string; sub: string; name: string; createdAt: number; lastUsedAt: number | null }
 
 /** What happened in a room: somebody joined or left, or a line was said into it. */
-export type RoomEvent = { id: number; code: string; kind: 'join' | 'leave' | 'say' | 'invite'; who: string; text: string; at: number }
+export type RoomEvent = { id: number; code: string; kind: 'join' | 'leave' | 'say' | 'invite' | 'quality'; who: string; text: string; at: number }
+
+/** How a leg sounded, from Telnyx's call_quality_stats on hangup. */
+export type LegQuality = { code: string; leg: string; who: string; mosIn: number | null; mosOut: number | null; jitterMs: number | null; lossPct: number | null; at: number }
 
 /** One line said in a room: transcribed from a caller's leg, or typed in and read aloud. */
 export type Line = { id: number; code: string; who: string; kind: 'person' | 'agent' | 'typed'; text: string; at: number }
@@ -93,6 +96,12 @@ export class Store {
         at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS transcript_lines_code ON transcript_lines(code, id);
+      CREATE TABLE IF NOT EXISTS leg_quality (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL, leg TEXT NOT NULL, who TEXT NOT NULL,
+        mos_in REAL, mos_out REAL, jitter_ms REAL, loss_pct REAL, at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS leg_quality_code ON leg_quality(code, id DESC);
       CREATE TABLE IF NOT EXISTS live_rooms (code TEXT PRIMARY KEY, conference_id TEXT NOT NULL, started_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS live_legs (
         leg TEXT PRIMARY KEY,
@@ -236,6 +245,22 @@ export class Store {
 
   events(code: string, limit = 50): RoomEvent[] {
     return (this.db.query('SELECT * FROM room_events WHERE code = ? ORDER BY id DESC LIMIT ?').all(code, limit) as any[]).map((r) => ({ id: r.id, code: r.code, kind: r.kind, who: r.who, text: r.text, at: r.at }))
+  }
+
+  // ---- call quality ------------------------------------------------------
+
+  addQuality(q: Omit<LegQuality, 'at'>, now = Date.now()): void {
+    this.db.query('INSERT INTO leg_quality (code, leg, who, mos_in, mos_out, jitter_ms, loss_pct, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(q.code, q.leg, q.who, q.mosIn, q.mosOut, q.jitterMs, q.lossPct, now)
+  }
+
+  quality(code: string, limit = 20): LegQuality[] {
+    return (this.db.query('SELECT * FROM leg_quality WHERE code = ? ORDER BY id DESC LIMIT ?').all(code, limit) as any[]).map((r) => ({ code: r.code, leg: r.leg, who: r.who, mosIn: r.mos_in, mosOut: r.mos_out, jitterMs: r.jitter_ms, lossPct: r.loss_pct, at: r.at }))
+  }
+
+  /** When each agent last said something in a room (ms), for "is this a rejoin". */
+  agentSeen(code: string): Record<string, number> {
+    const rows = this.db.query("SELECT who, MAX(at) AS at FROM transcript_lines WHERE code = ? AND kind = 'agent' GROUP BY who").all(code) as { who: string; at: number }[]
+    return Object.fromEntries(rows.map((r) => [r.who, r.at]))
   }
 
   // ---- transcripts ---------------------------------------------------------
