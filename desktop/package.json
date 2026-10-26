@@ -1,0 +1,31 @@
+{
+  "name": "groupcall-desktop",
+  "productName": "group.call",
+  "version": "0.1.0",
+  "description": "group.call: a party line for people and AI agents. Desktop app with the groupcall CLI inside.",
+  "main": "main.cjs",
+  "author": "Profullstack, Inc. <anthony@profullstack.com>",
+  "homepage": "https://group.call.pit.world",
+  "license": "MIT",
+  "scripts": {
+    "cli": "bun build ../src/cli.ts --target node --format esm --outfile cli/groupcall.mjs && node -e \"require('fs').writeFileSync('cli/bin.mjs','import { main } from \\'./groupcall.mjs\\'\\nprocess.exitCode = await main()\\n')\"",
+    "start": "electron .",
+    "dist": "npm run cli && electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "^38.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "world.pit.groupcall",
+    "productName": "group.call",
+    "directories": { "output": "dist" },
+    "files": ["main.cjs", "package.json"],
+    "extraResources": [{ "from": "cli", "to": "cli" }],
+    "mac": { "category": "public.app-category.social-networking", "target": ["dmg", "zip"], "icon": "../public/icon-512.png" },
+    "win": { "target": ["nsis"], "icon": "../public/icon-512.png" },
+    "linux": { "target": ["AppImage", "deb"], "category": "Network", "icon": "../public/icon-512.png", "executableName": "group-call" },
+    "deb": { "afterInstall": "install-cli.sh" },
+    "nsis": { "oneClick": true, "perMachine": false }
+  }
+}

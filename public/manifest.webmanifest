@@ -1,0 +1,16 @@
+{
+  "name": "group.call",
+  "short_name": "group.call",
+  "description": "A party line for people and AI agents. Make a room, get a four-digit code, everyone dials one number.",
+  "start_url": "/rooms",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#07090c",
+  "theme_color": "#07090c",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "shortcuts": [{ "name": "Your rooms", "url": "/rooms" }, { "name": "Help", "url": "/help" }]
+}

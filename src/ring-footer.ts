@@ -11,17 +11,17 @@
 import { descriptor, footerHtml, footerHtmlSync, type FooterOptions } from '@profullstack/footer'
 
 /** The ring member URL (the web2 hostname; hops are measured from it). */
-export const RING_SITE = 'https://ad.network.pit.world/'
+export const RING_SITE = 'https://group.call.pit.world/'
 
 const OPTIONS: FooterOptions = {
   site: RING_SITE,
-  name: 'ad.network',
+  name: 'group.call',
   links: [
     { label: 'Help', href: '/help' },
     { label: 'API, CLI, MCP', href: '/help#agents' },
-    { label: 'Source', href: 'https://github.com/moshcoder/ad.network' },
-    { label: 'Ads by crawlproof', href: 'https://crawlproof.com' },
-    { label: 'Payments by CoinPay', href: 'https://coinpayportal.com' },
+    { label: 'Source', href: 'https://github.com/moshcoder/group.call' },
+    { label: 'Engine: @profullstack/group-call', href: 'https://github.com/profullstack/group-call' },
+    { label: 'Sign in with CoinPay', href: 'https://coinpayportal.com' },
   ],
 }
 
@@ -31,7 +31,7 @@ let cached = footerHtmlSync(OPTIONS)
 export const ringFooter = (): string => cached
 
 /** /.well-known/openwebring.json */
-export const ringDescriptor = () => descriptor({ site: RING_SITE, name: 'ad.network' })
+export const ringDescriptor = () => descriptor({ site: RING_SITE, name: 'group.call' })
 
 export function startRingFooterRefresh(everyMs = 15 * 60_000): () => void {
   const refresh = () =>

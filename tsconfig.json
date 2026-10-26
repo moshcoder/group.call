@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "types": ["bun"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "bin/adnetwork"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "bin/groupcall"]
 }
