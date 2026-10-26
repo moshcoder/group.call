@@ -96,6 +96,7 @@ export class Store {
         at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS transcript_lines_code ON transcript_lines(code, id);
+      CREATE TABLE IF NOT EXISTS minutes_used (sub TEXT NOT NULL, month TEXT NOT NULL, minutes INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (sub, month));
       CREATE TABLE IF NOT EXISTS leg_quality (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT NOT NULL, leg TEXT NOT NULL, who TEXT NOT NULL,
@@ -245,6 +246,18 @@ export class Store {
 
   events(code: string, limit = 50): RoomEvent[] {
     return (this.db.query('SELECT * FROM room_events WHERE code = ? ORDER BY id DESC LIMIT ?').all(code, limit) as any[]).map((r) => ({ id: r.id, code: r.code, kind: r.kind, who: r.who, text: r.text, at: r.at }))
+  }
+
+  // ---- minutes ------------------------------------------------------------
+
+  /** Minutes a person's rooms used in a calendar month (UTC, "2026-10"). */
+  minutesUsed(sub: string, month: string): number {
+    return ((this.db.query('SELECT minutes FROM minutes_used WHERE sub = ? AND month = ?').get(sub, month) as { minutes: number } | null)?.minutes) ?? 0
+  }
+
+  addMinutes(sub: string, month: string, minutes: number): number {
+    this.db.query('INSERT INTO minutes_used (sub, month, minutes) VALUES (?, ?, ?) ON CONFLICT(sub, month) DO UPDATE SET minutes = minutes + excluded.minutes').run(sub, month, minutes)
+    return this.minutesUsed(sub, month)
   }
 
   // ---- call quality ------------------------------------------------------

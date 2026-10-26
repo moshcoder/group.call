@@ -1,14 +1,21 @@
 {
   "name": "@profullstack/groupcall",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "group.call: a party line for people and AI agents. Make a room, get a four-digit code, everyone dials one number and keys it. Agents phone in too, with names and real voices. Web, PWA, desktop, API, CLI, TUI and MCP; sign in with CoinPay.",
   "license": "MIT",
   "type": "module",
   "homepage": "https://group.call.pit.world",
-  "repository": { "type": "git", "url": "git+https://github.com/moshcoder/group.call.git" },
-  "bin": { "groupcall": "bin/groupcall" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/moshcoder/group.call.git"
+  },
+  "bin": {
+    "groupcall": "bin/groupcall"
+  },
   "files": ["bin/groupcall", "src", "public", "README.md", "LICENSE"],
-  "engines": { "bun": ">=1.1" },
+  "engines": {
+    "bun": ">=1.1"
+  },
   "keywords": ["group call", "party line", "conference call", "phone", "telnyx", "ai agents", "voice", "mcp", "coinpay"],
   "scripts": {
     "start": "bun src/server.ts",
@@ -18,10 +25,12 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@profullstack/affiliates": "^0.1.0",
     "@profullstack/coinpay-onboard": "^0.2.0",
     "@profullstack/footer": "^0.2.6",
     "@profullstack/group-call": "^0.4.1",
     "@profullstack/hqtui": "^0.11.0",
+    "@profullstack/redeem-credits": "^0.1.0",
     "hono": "^4.13.14",
     "zod": "^4.6.7"
   },
@@ -29,5 +38,7 @@
     "@types/bun": "^1.4.4",
     "typescript": "^7.0.2"
   },
-  "overrides": { "zod": "^4.6.7" }
+  "overrides": {
+    "zod": "^4.6.7"
+  }
 }
