@@ -234,3 +234,8 @@ describe('pages', () => {
     expect(r.headers.get('location')).toContain('/auth/start?next=/r/4821')
   })
 })
+
+test('the copied invitation is plain words a text message can carry', async () => {
+  const { invitation } = await import('../src/html.ts')
+  expect(invitation('Test', '+15106169327', '9474')).toBe('Join "Test" on group.call: call 510-616-9327, then key 9474#')
+})
