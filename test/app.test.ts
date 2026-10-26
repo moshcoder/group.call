@@ -357,3 +357,16 @@ test("a known caller is named, and agents can see which recent lines came from s
   expect(s.live.map((p) => p.name)).toEqual(['Anthony', 'caller ending 00'])
   expect(s.recent.map((l) => `${l.who}:${l.trusted}`)).toEqual(['Anthony:true', 'caller ending 00:false'])
 })
+
+test("an agent's words coming back through a person's speakerphone are not filed as that person", async () => {
+  const { call, event, store } = setup()
+  const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Echo' })).json()) as any
+  for (const [leg, from] of [['leg-a', AGENT_CALLER], ['leg-p', '+15550001111']] as const) {
+    await event('call.initiated', { call_control_id: leg, direction: 'incoming', from })
+    await event('call.gather.ended', { call_control_id: leg, digits: room.code })
+  }
+  await event('call.transcription', { call_control_id: 'leg-a', transcription_data: { transcript: 'Sounds good. I could use a refill.', is_final: true } })
+  await event('call.transcription', { call_control_id: 'leg-p', transcription_data: { transcript: 'Right. It sounds good. I could use a refill.', is_final: true } })
+  await event('call.transcription', { call_control_id: 'leg-p', transcription_data: { transcript: 'Can you check the report?', is_final: true } })
+  expect(store.transcript(room.code).map((l) => l.text)).toEqual(['Sounds good. I could use a refill.', 'Can you check the report?'])
+})

@@ -130,6 +130,8 @@ export class GroupCallService {
             ...(config.transcribe === false ? {} : { transcribe: { engine: 'Deepgram', language: 'en' } }),
             onTranscript: (code, who, text) => {
               const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers)
+              // An agent's voice coming back through a person's speakerphone is the agent, not them.
+              if (shown.kind === 'person' && this.isEcho(code, text)) return
               this.addLine(code, shown.name, shown.kind, text)
             },
             onEvent: (line) => console.log(line),
@@ -141,6 +143,21 @@ export class GroupCallService {
     const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers)
     this.store.addEvent({ code, kind, who: shown.name, text: '' })
     this.emit({ type: kind, code, who: shown.name, callers, at: Date.now() })
+  }
+
+  /** Whether a person's line mostly repeats what an agent said in the last 15 seconds. */
+  private isEcho(code: string, text: string): boolean {
+    const words = (t: string) => t.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter((w) => w.length > 1)
+    const heard = words(text)
+    if (heard.length === 0) return false
+    const since = Date.now() - 15_000
+    return this.store
+      .transcript(code, { limit: 6 })
+      .filter((l) => l.kind === 'agent' && l.at >= since)
+      .some((l) => {
+        const said = new Set(words(l.text))
+        return heard.filter((w) => said.has(w)).length / heard.length >= 0.6
+      })
   }
 
   /** A line into the transcript, and out to every open room page. */
