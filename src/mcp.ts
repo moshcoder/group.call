@@ -58,6 +58,9 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
   server.tool('invite_agent', "Ask one of the instance's own agents (riotcoder or cha0spunk) to dial in to a room. Operators only.", { code, agent: z.enum(['riotcoder', 'cha0spunk']) }, wrap(({ code, agent }) => client.invite(code, agent)))
   server.tool('create_invite', 'Make a single-use invite link to group.call (each person has a few). Whoever signs in through it and you both get bonus minutes.', { note: z.string().max(80).optional() }, wrap(({ note }) => client.newInvite(note)))
   server.tool('redeem_code', 'Redeem a credit code (extra call minutes, one-off or every month).', { code: z.string().min(6) }, wrap(({ code }) => client.redeem(code)))
+  server.tool('record_room', 'Record every call in a room to one mp3 (everyone mixed), saved when the call ends; on=false stops.', { code, on: z.boolean().default(true) }, wrap(({ code, on }) => client.record(code, on)))
+  server.tool('list_recordings', "A room's recordings, with mp3 links (fetch them with your GROUPCALL_KEY as a bearer).", { code }, wrap(({ code }) => client.recordings(code)))
+  server.tool('call_sip_agent', 'Dial a voice agent (e.g. an ElevenLabs agent) into a room over SIP: joins on answer, no press 1. X- headers ride on the INVITE. Operators only.', { code, sip: z.string().regex(/^sips?:/), name: z.string().min(1).max(40), headers: z.record(z.string(), z.string()).optional() }, wrap(({ code, sip, name, headers }) => client.callSip(code, sip, name, headers ?? {})))
   server.tool('rename_room', 'Rename a room.', { code, name: z.string().min(1).max(60) }, wrap(({ code, name }) => client.rename(code, name)))
   server.tool('delete_room', 'Delete a room: everyone on the line is hung up and the code is freed.', { code }, wrap(({ code }) => client.remove(code)))
   return server

@@ -10,8 +10,9 @@
 import { CoinPay } from '@profullstack/coinpay-onboard'
 import { Credits, sqliteStore } from '@profullstack/redeem-credits'
 import { Affiliates, sqliteStore as affiliateStore } from '@profullstack/affiliates'
-import { GroupCall, newRoomCode, normalNumber, type Participant, type TelnyxEvent } from '@profullstack/group-call'
-import type { AgentInvite, Line, Pass, Room, RoomEvent, Store, User } from './db.js'
+import { mkdirSync, unlinkSync } from 'node:fs'
+import { GroupCall, newRoomCode, normalNumber, type Participant, type Recording as SavedRecording, type TelnyxEvent } from '@profullstack/group-call'
+import type { AgentInvite, Line, Pass, Recording, Room, RoomEvent, Store, User } from './db.js'
 
 export class UserError extends Error {
   constructor(
@@ -59,6 +60,10 @@ export type Config = {
   freeMinutes?: number
   /** Transcribe every leg (Telnyx, per minute per leg). On by default. */
   transcribe?: boolean
+  /** Where finished recordings are kept as mp3; without it, rooms cannot record. */
+  recordingsDir?: string
+  /** SIP hosts an operator may dial a voice agent in from (ElevenLabs by default). */
+  sipHosts?: string[]
   origin?: string
   fetch?: typeof fetch
 }
@@ -147,6 +152,7 @@ export class GroupCallService {
             },
             onJoin: (code, who, info) => {
               if (info.conferenceId) store.saveLeg(code, info.conferenceId, info.startedAt, who)
+              if (info.conferenceId && store.room(code)?.record) void this.startRecording(code, info.conferenceId)
               this.record(code, 'join', who, info.callers)
               // One leg per agent per room: a newer one replaces an older, so a restart or a
               // process that died without hanging up can never leave a silent twin behind.
@@ -169,9 +175,110 @@ export class GroupCallService {
               if (shown.kind === 'person' && this.isEcho(code, text)) return
               this.addLine(code, shown.name, shown.kind, text)
             },
+            onRecording: (r) => void this.saveRecording(r).catch((e) => console.error('group call: recording:', e)),
             onEvent: (line) => console.log(line),
           })
         : null
+    if (config.recordingsDir) mkdirSync(config.recordingsDir, { recursive: true })
+  }
+
+  // ---- recordings ----------------------------------------------------------
+
+  /** Whether this instance can record at all. */
+  get canRecord(): boolean {
+    return Boolean(this.line && this.config.recordingsDir)
+  }
+
+  /** Start recording a room's running conference, once per conference. */
+  private async startRecording(code: string, conferenceId: string): Promise<void> {
+    if (!this.canRecord || this.line!.recording(code)) return
+    if (!(await this.line!.record(code))) return
+    if (!this.store.openRecording(conferenceId)) this.store.addRecording(code, conferenceId)
+    this.store.addEvent({ code, kind: 'say', who: 'group.call', text: 'recording started' })
+  }
+
+  /** Turn a room's recording on or off; on with people on the line starts now. */
+  async setRecord(user: User, code: string, on: boolean): Promise<{ record: boolean; recording: boolean }> {
+    const room = this.ownRoom(user, code)
+    if (on && !this.canRecord) throw new UserError('Recording is not set up on this instance.', undefined, 503)
+    this.store.setRecord(room.code, on)
+    const conf = this.store.liveSnapshot().find((r) => r.code === room.code)?.conferenceId
+    if (on && conf && (this.line?.callersIn(room.code) ?? 0) > 0) await this.startRecording(room.code, conf)
+    if (!on) await this.line?.stopRecording(room.code)
+    return { record: on, recording: this.line?.recording(room.code) ?? false }
+  }
+
+  recordings(user: User, code: string): Recording[] {
+    return this.store.recordings(this.ownRoom(user, code).code)
+  }
+
+  /** A recording file its room's owner may download, or null. */
+  ownRecording(user: User, id: string): Recording | null {
+    const rec = this.store.recording(id)
+    if (!rec || rec.status !== 'ready') return null
+    const room = this.store.room(rec.code)
+    return room && room.sub === user.sub ? rec : null
+  }
+
+  /**
+   * Telnyx saved a room's recording: download the mp3 now, while its signed link
+   * still works, and asking Telnyx for a fresh one when it does not.
+   */
+  async saveRecording(r: SavedRecording): Promise<Recording | null> {
+    const open = this.store.openRecording(r.conferenceId)
+    const code = open?.code ?? r.code
+    if (!code || !this.config.recordingsDir) {
+      console.log(`  a recording was saved for a conference no room claims (${r.recordingId}).`)
+      return null
+    }
+    const rec = open ?? this.store.addRecording(code, r.conferenceId)
+    const started = r.startedAt ? Date.parse(r.startedAt) : NaN
+    const ended = r.endedAt ? Date.parse(r.endedAt) : NaN
+    this.store.updateRecording(rec.id, {
+      recordingId: r.recordingId,
+      status: 'saving',
+      endedAt: Number.isFinite(ended) ? ended : Date.now(),
+      durationSecs: Number.isFinite(started) && Number.isFinite(ended) ? Math.round((ended - started) / 1000) : null,
+    })
+    const path = `${this.config.recordingsDir.replace(/\/+$/, '')}/${rec.id}.mp3`
+    const doFetch = this.config.fetch ?? fetch
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const url = attempt === 0 ? r.mp3 : (await this.line?.recordingLinks(r.recordingId))?.mp3
+      if (url) {
+        try {
+          const res = await doFetch(url)
+          if (res.ok) {
+            const bytes = await Bun.write(path, await res.arrayBuffer())
+            this.store.updateRecording(rec.id, { status: 'ready', path, bytes })
+            this.store.addEvent({ code, kind: 'say', who: 'group.call', text: `recording saved (${Math.round(bytes / 1024)} KB)` })
+            return this.store.recording(rec.id)
+          }
+        } catch {}
+      }
+      await new Promise((ok) => setTimeout(ok, attempt === 0 ? 2000 : 10_000))
+    }
+    this.store.updateRecording(rec.id, { status: 'failed', note: 'the file could not be downloaded from Telnyx' })
+    return this.store.recording(rec.id)
+  }
+
+  /**
+   * Dial a voice agent into a room over SIP: no press 1, no greeting, named, with
+   * X- headers that tell it which call this is. Operators only, and only to SIP
+   * hosts this instance trusts, since it is a paid call to a machine.
+   */
+  async callSip(user: User, code: string, uri: string, name: string, headers: Record<string, string> = {}): Promise<{ ringing: true; to: string }> {
+    const room = this.ownRoom(user, code)
+    if (!this.mayInviteAgents(user)) throw new UserError('Dialling a SIP agent in is for the operators of this instance.', undefined, 403)
+    if (!this.line || !this.config.telnyxConnectionId) throw new UserError('Calling out is not set up on this instance.', undefined, 503)
+    const m = /^sips?:[^\s@]+@([^\s;:@]+)/i.exec(uri.trim())
+    const hosts = this.config.sipHosts ?? ['sip.rtc.elevenlabs.io']
+    if (!m || !hosts.includes(m[1]!.toLowerCase())) throw new UserError(`Only SIP agents at ${hosts.join(', ')}.`, 'sip')
+    const clean = name.replace(/\s+/g, ' ').trim().slice(0, 40) || 'agent'
+    const placed = await this.line.dial(room.code, uri.trim(), { from: this.config.dialIn, connectionId: this.config.telnyxConnectionId, name: clean, direct: true, headers })
+    if (!placed) throw new UserError('The call could not be placed. Try again in a minute.', 'sip', 502)
+    this.store.addEvent({ code: room.code, kind: 'invite', who: clean, text: 'is being called in' })
+    this.emit({ type: 'invite', code: room.code, who: clean, text: 'is being called in', callers: this.line.callersIn(room.code), at: Date.now() })
+    return { ringing: true, to: m[1]! }
   }
 
   private record(code: string, kind: 'join' | 'leave', who: Participant, callers: number): void {
@@ -413,6 +520,11 @@ export class GroupCallService {
     const room = this.ownRoom(user, code)
     // Whoever is on the line is let go first, so a deleted code holds nobody.
     for (const p of this.line?.participants(room.code) ?? []) await this.line?.kick(room.code, p.leg)
+    for (const rec of this.store.recordings(room.code, 10_000)) {
+      try {
+        if (rec.path) unlinkSync(rec.path)
+      } catch {}
+    }
     this.store.removeRoom(room.code)
   }
 

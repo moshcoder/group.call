@@ -9,7 +9,7 @@
         "@profullstack/affiliates": "^0.1.0",
         "@profullstack/coinpay-onboard": "^0.2.0",
         "@profullstack/footer": "^0.2.6",
-        "@profullstack/group-call": "^0.4.1",
+        "@profullstack/group-call": "^0.5.0",
         "@profullstack/hqtui": "^0.11.0",
         "@profullstack/redeem-credits": "^0.1.0",
         "hono": "^4.13.14",
@@ -35,7 +35,7 @@
 
     "@profullstack/footer": ["@profullstack/footer@0.2.6", "", { "peerDependencies": { "react": ">=18" }, "optionalPeers": ["react"], "bin": { "profullstack-footer": "bin/profullstack-footer.js" } }, "sha512-BKwbDszAc7e0mYIBiPjgr/5WS8WyDt8IW718s/zW/8pCWOIB1BGwSNs6fmImRSo5kqIjQKUVbXp22jZQ5GEipA=="],
 
-    "@profullstack/group-call": ["@profullstack/group-call@0.4.1", "", {}, "sha512-oRT8rvkyyysThWwc4U/iYrOJA0970VloxbD/KRIpjTMlYGTLQBkHl/WoBdAWUuxm6azZQqCEn9RpzFjLK/L53w=="],
+    "@profullstack/group-call": ["@profullstack/group-call@0.5.0", "", {}, "sha512-rvIt15Z5U8nmXwZcty/2gVQ5Ox9uBXEs70t7HMq7DF1E4hmKzXv2ateEOeEEbj6KO+egu6qq2Jq8fCOuZFQWog=="],
 
     "@profullstack/hqtui": ["@profullstack/hqtui@0.11.1", "", { "bin": { "hqtui": "bin/hqtui.mjs" } }, "sha512-c/UzTmiRDjdLZQEO/gdVinUKtx6Q0WBPdixIm90MBTvC3DqFPqpersRs0BIDPS7XVokCSr1DtELI91kj5J1kCg=="],
 

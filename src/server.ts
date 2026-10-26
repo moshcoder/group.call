@@ -13,8 +13,8 @@ import { streamSSE } from 'hono/streaming'
 import { authorizeUrl, exchangeCode, pkce } from '@profullstack/coinpay-onboard/oauth'
 import { CoinPay, PAID_EVENTS, verifyWebhook, type WebhookEvent } from '@profullstack/coinpay-onboard'
 import { sameSecret } from '@profullstack/group-call'
-import { Sealer, Store, type Room, type User } from './db.js'
 import { helpPage, homePage, installScript, invitedPage, invitesPage, mePage, messagePage, passPage, roomPage, roomsPage, SITE, type Ctx } from './html.js'
+import { Sealer, Store, type Recording, type Room, type User } from './db.js'
 import { startPitFooterRefresh } from './pit-footer.js'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh } from './ring.js'
 import { ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
@@ -28,7 +28,7 @@ const SESSION = 'gc_session'
 const SCOPES = ['openid', 'profile', 'email']
 
 const SECURITY_HEADERS: Record<string, string> = {
-  'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' https://crawlproof.com; img-src 'self' data: https://built.indie.pit.world https://pwamart.com; connect-src 'self' https://crawlproof.com; manifest-src 'self'; worker-src 'self'; frame-src https://crawlproof.com; form-action 'self' https://coinpayportal.com https://pit.world; base-uri 'none'; frame-ancestors 'none'",
+  'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' https://crawlproof.com; img-src 'self' data: https://built.indie.pit.world https://pwamart.com; connect-src 'self' https://crawlproof.com; media-src 'self'; manifest-src 'self'; worker-src 'self'; frame-src https://crawlproof.com; form-action 'self' https://coinpayportal.com https://pit.world; base-uri 'none'; frame-ancestors 'none'",
   'referrer-policy': 'strict-origin-when-cross-origin',
   'x-content-type-options': 'nosniff',
   'permissions-policy': 'interest-cohort=(), browsing-topics=(), camera=(), microphone=(), geolocation=()',
@@ -247,7 +247,7 @@ export function createApp(deps: Deps) {
   })
 
   const roomView = (c: Context, user: User, room: Room, extra: { flash?: string; error?: string } = {}, status = 200) =>
-    page(c, roomPage(ctxOf(c), { room, owner: room.sub === user.sub, live: svc.live(room.code), events: svc.events(room.code), invites: store.invites(room.code), transcript: store.transcript(room.code, { limit: 200 }), ...extra }), status)
+    page(c, roomPage(ctxOf(c), { room, owner: room.sub === user.sub, live: svc.live(room.code), events: svc.events(room.code), invites: store.invites(room.code), transcript: store.transcript(room.code, { limit: 200 }), recordings: store.recordings(room.code), canRecord: svc.canRecord, ...extra }), status)
 
   app.get('/r/:code', (c) => {
     const user = need(c, `r/${codeParam(c)}`)
@@ -297,7 +297,18 @@ export function createApp(deps: Deps) {
     }
   })
 
-  app.post('/r/:code/:action{(say|invite|call|rename|delete)}', async (c) => {
+  /** A recording file, streamed with ranges so a player can seek. */
+  const mp3 = (rec: Recording) =>
+    new Response(Bun.file(rec.path), {
+      headers: { 'content-type': 'audio/mpeg', 'content-disposition': `inline; filename="groupcall-${rec.code}-${rec.id}.mp3"`, 'cache-control': 'private, max-age=3600' },
+    })
+  app.get('/r/:code/rec/:file{rec_[A-Za-z0-9_-]+\\.mp3}', (c) => {
+    const user = userOf(c)
+    const rec = user ? svc.ownRecording(user, String(c.req.param('file')).replace(/\.mp3$/, '')) : null
+    return rec && rec.code === codeParam(c) ? mp3(rec) : c.json({ error: 'not found' }, 404)
+  })
+
+  app.post('/r/:code/:action{(say|invite|call|rename|delete|record)}', async (c) => {
     const user = need(c, `r/${codeParam(c)}`)
     if (user instanceof Response) return user
     const code = codeParam(c)
@@ -320,6 +331,10 @@ export function createApp(deps: Deps) {
       if (action === 'call') {
         const r = await svc.callPhone(user, code, form.phone ?? '', form.name ?? '')
         return roomView(c, user, room, { flash: `Ringing ${r.to}. Pick up and press 1 to join.` })
+      }
+      if (action === 'record') {
+        const r = await svc.setRecord(user, code, form.on === '1')
+        return roomView(c, user, store.room(code)!, { flash: r.record ? (r.recording ? 'Recording now.' : 'This room records every call from now on.') : 'Recording is off.' })
       }
       if (action === 'rename') {
         const renamed = svc.renameRoom(user, code, form.name ?? '')
@@ -451,6 +466,8 @@ export function createApp(deps: Deps) {
     created_at: new Date(r.createdAt).toISOString(),
     last_used_at: r.lastUsedAt ? new Date(r.lastUsedAt).toISOString() : null,
     page: `${ORIGIN}/r/${r.code}`,
+    record: r.record,
+    recording: svc.line?.recording(r.code) ?? false,
     ...(full ? { quality: store.quality(r.code, 10).map((q) => ({ who: q.who, mos_in: q.mosIn, mos_out: q.mosOut, jitter_ms: q.jitterMs, loss_pct: q.lossPct, at: new Date(q.at).toISOString() })), live: svc.live(r.code), activity: svc.events(r.code).slice(0, 20).map((e) => ({ kind: e.kind, who: e.who, text: e.text || undefined, at: new Date(e.at).toISOString() })) } : {}),
   })
 
@@ -535,7 +552,34 @@ export function createApp(deps: Deps) {
     api(async (c, u) => {
       if (!dialLimit.allow(`call:${u.sub}`)) return c.json({ error: 'too many calls; 10 an hour' }, 429)
       const b = await body(c)
+      if (b.sip) {
+        const headers = b.headers && typeof b.headers === 'object' ? Object.fromEntries(Object.entries(b.headers as Record<string, unknown>).map(([k, v]) => [k, String(v)])) : {}
+        return c.json(await svc.callSip(u, param(c, 'code'), String(b.sip), String(b.name ?? ''), headers), 202)
+      }
       return c.json(await svc.callPhone(u, param(c, 'code'), String(b.phone ?? b.to ?? ''), b.name ? String(b.name) : ''), 202)
+    }),
+  )
+  app.post(
+    '/api/v1/rooms/:code/record',
+    api(async (c, u) => c.json(await svc.setRecord(u, param(c, 'code'), (await body(c)).on !== false))),
+  )
+  const recordingJson = (r: Recording) => ({
+    id: r.id,
+    status: r.status,
+    duration_secs: r.durationSecs,
+    bytes: r.bytes,
+    started_at: new Date(r.startedAt).toISOString(),
+    ended_at: r.endedAt ? new Date(r.endedAt).toISOString() : null,
+    mp3: r.status === 'ready' ? `${ORIGIN}/api/v1/recordings/${r.id}.mp3` : null,
+    ...(r.note ? { note: r.note } : {}),
+  })
+  app.get('/api/v1/rooms/:code/recordings', api((c, u) => c.json({ recordings: svc.recordings(u, param(c, 'code')).map(recordingJson) })))
+  app.get(
+    '/api/v1/recordings/:file{rec_[A-Za-z0-9_-]+\\.mp3}',
+    api((c, u) => {
+      const rec = svc.ownRecording(u, param(c, 'file').replace(/\.mp3$/, ''))
+      if (!rec) return c.json({ error: 'not found' }, 404)
+      return mp3(rec)
     }),
   )
   app.post(
@@ -645,6 +689,8 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ),
       transcribe: (env.GROUPCALL_TRANSCRIBE ?? '1') !== '0',
       freeMinutes: Number(env.GROUPCALL_FREE_MINUTES ?? 300),
+      recordingsDir: env.GROUPCALL_RECORDINGS ?? `${env.HOME}/.local/share/group-call/recordings`,
+      ...(env.GROUPCALL_SIP_HOSTS ? { sipHosts: list(env.GROUPCALL_SIP_HOSTS) } : {}),
     },
   })
   const trustProxy = (env.GROUPCALL_TRUST_PROXY ?? '1') === '1'

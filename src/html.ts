@@ -5,7 +5,7 @@
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import type { AgentInvite, Line, Pass, Room, RoomEvent, User } from './db.js'
+import type { AgentInvite, Line, Pass, Recording, Room, RoomEvent, User } from './db.js'
 import { pitFooter } from './pit-footer.js'
 import { RING_PLACEHOLDER } from './ring.js'
 import { ringFooter } from './ring-footer.js'
@@ -169,7 +169,7 @@ ${dialBlock(ctx)}`,
 
 const lineHtml = (l: Line) => `<li class="${esc(l.kind)}"><span class="muted">${esc(when(l.at).slice(11, 16))}</span> <b>${esc(l.who)}</b>${l.kind === 'typed' ? ' <span class="muted">(typed)</span>' : ''} ${esc(l.text)}</li>`
 
-export function roomPage(ctx: Ctx, data: { room: Room; owner: boolean; live: { name: string; kind: string; since: number }[]; events: RoomEvent[]; invites: AgentInvite[]; transcript: Line[]; flash?: string; error?: string }): string {
+export function roomPage(ctx: Ctx, data: { room: Room; owner: boolean; live: { name: string; kind: string; since: number }[]; events: RoomEvent[]; invites: AgentInvite[]; transcript: Line[]; recordings?: Recording[]; canRecord?: boolean; flash?: string; error?: string }): string {
   const r = data.room
   const people = data.live.length
     ? data.live.map((p) => `<li class="${esc(p.kind)}"><span class="dot" aria-hidden="true"></span>${esc(p.name)} <span class="muted">${p.kind === 'agent' ? 'agent' : 'on the phone'}</span></li>`).join('')
@@ -202,6 +202,29 @@ ${
     .map(([name, a]) => `<form method="post" action="/r/${esc(r.code)}/invite">${csrfField(ctx)}<input type="hidden" name="agent" value="${esc(name)}"><button class="secondary">Invite ${esc(name)}</button><span class="muted small">${esc(a.about)}</span></form>`)
     .join('')}</div>
   ${data.invites.length ? `<ul class="muted small">${data.invites.slice(0, 5).map((i) => `<li>${esc(i.agent)}: ${esc(i.status)}${i.note ? ` (${esc(i.note)})` : ''}, ${esc(when(i.createdAt).slice(11, 16))}</li>`).join('')}</ul>` : ''}
+</section>`
+    : ''
+}
+${
+  data.canRecord
+    ? `<section>
+  <h2>Record</h2>
+  <p class="muted small">${r.record ? 'This room records every call on it: everyone, mixed into one mp3, saved here when the call ends.' : 'Record every call in this room to an mp3, saved here when the call ends. Tell people they are being recorded.'}</p>
+  <form method="post" action="/r/${esc(r.code)}/record">${csrfField(ctx)}<input type="hidden" name="on" value="${r.record ? '0' : '1'}"><button class="${r.record ? 'secondary' : ''}">${r.record ? 'Stop recording calls' : 'Record calls'}</button></form>
+  ${
+    data.recordings?.length
+      ? `<ul class="recordings">${data.recordings
+          .slice(0, 20)
+          .map((rec) => {
+            const mins = rec.durationSecs !== null ? `${Math.round(rec.durationSecs / 60)} min` : ''
+            const label = `${esc(when(rec.startedAt).slice(0, 16).replace('T', ' '))} ${mins ? `· ${mins}` : ''}`
+            return rec.status === 'ready'
+              ? `<li>${label} · <a href="/r/${esc(r.code)}/rec/${esc(rec.id)}.mp3" download>mp3</a><br><audio controls preload="none" src="/r/${esc(r.code)}/rec/${esc(rec.id)}.mp3"></audio></li>`
+              : `<li class="muted">${label} · ${esc(rec.status)}${rec.note ? ` (${esc(rec.note)})` : ''}</li>`
+          })
+          .join('')}</ul>`
+      : ''
+  }
 </section>`
     : ''
 }

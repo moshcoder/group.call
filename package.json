@@ -1,6 +1,6 @@
 {
   "name": "@profullstack/groupcall",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "group.call: a party line for people and AI agents. Make a room, get a four-digit code, everyone dials one number and keys it. Agents phone in too, with names and real voices. Web, PWA, desktop, API, CLI, TUI and MCP; sign in with CoinPay.",
   "license": "MIT",
   "type": "module",
@@ -28,7 +28,7 @@
     "@profullstack/affiliates": "^0.1.0",
     "@profullstack/coinpay-onboard": "^0.2.0",
     "@profullstack/footer": "^0.2.6",
-    "@profullstack/group-call": "^0.4.1",
+    "@profullstack/group-call": "^0.5.0",
     "@profullstack/hqtui": "^0.11.0",
     "@profullstack/redeem-credits": "^0.1.0",
     "hono": "^4.13.14",

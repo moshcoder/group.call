@@ -13,7 +13,10 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 
 export type User = { sub: string; name: string; email: string; apiKeyHash: string | null; createdAt: number }
 
-export type Room = { code: string; sub: string; name: string; createdAt: number; lastUsedAt: number | null }
+export type Room = { code: string; sub: string; name: string; createdAt: number; lastUsedAt: number | null; record: boolean }
+
+/** A recording of a room's call: started, then saved by Telnyx, then downloaded here. */
+export type Recording = { id: string; code: string; conferenceId: string; recordingId: string | null; status: 'recording' | 'saving' | 'ready' | 'failed'; path: string; bytes: number; durationSecs: number | null; startedAt: number; endedAt: number | null; note: string }
 
 /** What happened in a room: somebody joined or left, or a line was said into it. */
 export type RoomEvent = { id: number; code: string; kind: 'join' | 'leave' | 'say' | 'invite' | 'quality'; who: string; text: string; at: number }
@@ -133,7 +136,26 @@ export class Store {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS passes_sub ON passes(sub, created_at DESC);
+      CREATE TABLE IF NOT EXISTS recordings (
+        id TEXT PRIMARY KEY,
+        code TEXT NOT NULL,
+        conference_id TEXT NOT NULL,
+        recording_id TEXT,
+        status TEXT NOT NULL DEFAULT 'recording',
+        path TEXT NOT NULL DEFAULT '',
+        bytes INTEGER NOT NULL DEFAULT 0,
+        duration_secs INTEGER,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER,
+        note TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS recordings_code ON recordings(code, started_at DESC);
+      CREATE INDEX IF NOT EXISTS recordings_conference ON recordings(conference_id);
     `)
+    // Added after launch: a room that records every call on it.
+    try {
+      this.db.exec('ALTER TABLE rooms ADD COLUMN record INTEGER NOT NULL DEFAULT 0')
+    } catch {}
   }
 
   // ---- people ------------------------------------------------------------
@@ -199,7 +221,7 @@ export class Store {
   // ---- rooms -------------------------------------------------------------
 
   private toRoom(r: any): Room | null {
-    return r ? { code: r.code, sub: r.sub, name: r.name, createdAt: r.created_at, lastUsedAt: r.last_used_at } : null
+    return r ? { code: r.code, sub: r.sub, name: r.name, createdAt: r.created_at, lastUsedAt: r.last_used_at, record: r.record === 1 } : null
   }
 
   addRoom(r: Pick<Room, 'code' | 'sub' | 'name'>, now = Date.now()): Room {
@@ -223,6 +245,42 @@ export class Store {
     this.db.query('UPDATE rooms SET name = ? WHERE code = ?').run(name, code)
   }
 
+  setRecord(code: string, on: boolean): void {
+    this.db.query('UPDATE rooms SET record = ? WHERE code = ?').run(on ? 1 : 0, code)
+  }
+
+  // ---- recordings ----------------------------------------------------------
+
+  private toRecording(r: any): Recording | null {
+    return r ? { id: r.id, code: r.code, conferenceId: r.conference_id, recordingId: r.recording_id, status: r.status, path: r.path, bytes: r.bytes, durationSecs: r.duration_secs, startedAt: r.started_at, endedAt: r.ended_at, note: r.note } : null
+  }
+
+  addRecording(code: string, conferenceId: string, now = Date.now()): Recording {
+    const id = `rec_${randomBytes(9).toString('base64url')}`
+    this.db.query('INSERT INTO recordings (id, code, conference_id, started_at) VALUES (?, ?, ?, ?)').run(id, code, conferenceId, now)
+    return this.recording(id)!
+  }
+
+  recording(id: string): Recording | null {
+    return this.toRecording(this.db.query('SELECT * FROM recordings WHERE id = ?').get(id))
+  }
+
+  /** The recording still running on a conference: what a saved webhook belongs to. */
+  openRecording(conferenceId: string): Recording | null {
+    return this.toRecording(this.db.query("SELECT * FROM recordings WHERE conference_id = ? AND status = 'recording' ORDER BY started_at DESC LIMIT 1").get(conferenceId))
+  }
+
+  recordings(code: string, limit = 50): Recording[] {
+    return (this.db.query('SELECT * FROM recordings WHERE code = ? ORDER BY started_at DESC LIMIT ?').all(code, limit) as any[]).map((r) => this.toRecording(r)!)
+  }
+
+  updateRecording(id: string, patch: Partial<Pick<Recording, 'recordingId' | 'status' | 'path' | 'bytes' | 'durationSecs' | 'endedAt' | 'note'>>): void {
+    const cols: Record<string, string> = { recordingId: 'recording_id', status: 'status', path: 'path', bytes: 'bytes', durationSecs: 'duration_secs', endedAt: 'ended_at', note: 'note' }
+    const sets = Object.keys(patch).filter((k) => k in cols)
+    if (sets.length === 0) return
+    this.db.query(`UPDATE recordings SET ${sets.map((k) => `${cols[k]} = ?`).join(', ')} WHERE id = ?`).run(...sets.map((k) => (patch as any)[k] ?? null), id)
+  }
+
   touchRoom(code: string, now = Date.now()): void {
     this.db.query('UPDATE rooms SET last_used_at = ? WHERE code = ?').run(now, code)
   }
@@ -232,6 +290,7 @@ export class Store {
       this.db.query('DELETE FROM rooms WHERE code = ?').run(code)
       this.db.query('DELETE FROM room_events WHERE code = ?').run(code)
       this.db.query('DELETE FROM transcript_lines WHERE code = ?').run(code)
+      this.db.query('DELETE FROM recordings WHERE code = ?').run(code)
     })()
   }
 
