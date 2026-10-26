@@ -418,3 +418,13 @@ test('an agent can follow the room line by line, waiting for the next', async ()
   const none = (await (await app.request(`/api/v1/agent-queue/rooms/${room.code}/lines?after=${got.lines[0].id}&wait=0`, { headers: worker })).json()) as any
   expect(none.lines).toEqual([])
 })
+
+test('the same phrase finalized twice is one line', async () => {
+  const { call, event, store } = setup()
+  const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Dupes' })).json()) as any
+  await event('call.initiated', { call_control_id: 'leg-a', direction: 'incoming', from: AGENT_CALLER })
+  await event('call.gather.ended', { call_control_id: 'leg-a', digits: room.code })
+  await event('call.transcription', { call_control_id: 'leg-a', transcription_data: { transcript: 'The capital of Japan is Tokyo,', is_final: true } })
+  await event('call.transcription', { call_control_id: 'leg-a', transcription_data: { transcript: 'The capital of Japan is Tokyo.', is_final: true } })
+  expect(store.transcript(room.code).length).toBe(1)
+})
