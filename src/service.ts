@@ -240,6 +240,11 @@ export class GroupCallService {
     return result
   }
 
+  /** Whether a line's speaker is someone this instance knows (an agent may take work from them). */
+  trusted(who: string, kind: string): boolean {
+    return kind === 'person' && Object.values(this.config.knownCallers ?? {}).includes(who)
+  }
+
   /** For an agent on the line: how many people (not agents) are still in the room. */
   roomStatus(code: string) {
     const live = this.live(code)

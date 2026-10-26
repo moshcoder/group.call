@@ -465,6 +465,33 @@ export function createApp(deps: Deps) {
     if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
     return c.json(svc.roomStatus(codeParam(c)))
   })
+  /**
+   * For an agent on a call: the room's lines after `after`, as group.call heard them (one
+   * transcription per leg, so each line has its speaker; agent echo already dropped). Waits up
+   * to `wait` seconds for the next one, so an agent hears a line as soon as it lands.
+   */
+  app.get('/api/v1/agent-queue/rooms/:code/lines', async (c) => {
+    if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
+    const code = codeParam(c)
+    const after = Number(c.req.query('after') ?? 0)
+    const waitMs = Math.min(25, Math.max(0, Number(c.req.query('wait') ?? 20))) * 1000
+    const shape = (lines: ReturnType<typeof store.transcript>) => ({ lines: lines.map((l) => ({ id: l.id, who: l.who, kind: l.kind, text: l.text, at: l.at, trusted: svc.trusted(l.who, l.kind) })) })
+    const now = store.transcript(code, { after, limit: 200 })
+    if (now.length || waitMs === 0) return c.json(shape(now))
+    const lines = await new Promise<ReturnType<typeof store.transcript>>((resolve) => {
+      const timer = setTimeout(() => {
+        off()
+        resolve([])
+      }, waitMs)
+      const off = svc.subscribe(code, (e) => {
+        if (e.type !== 'line') return
+        clearTimeout(timer)
+        off()
+        resolve(store.transcript(code, { after, limit: 200 }))
+      })
+    })
+    return c.json(shape(lines))
+  })
   app.post('/api/v1/agent-queue/:id', async (c) => {
     if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
     const b = await body(c)
