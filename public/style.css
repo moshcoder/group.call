@@ -82,3 +82,7 @@ td { border-top: 1px solid var(--line); padding: .5rem .4rem; vertical-align: to
 td:first-child { white-space: nowrap; }
 @media (max-width: 640px) { td:first-child { white-space: normal; } }
 .pass { margin-top: 2rem; }
+.transcript .lines { list-style: none; padding: .8rem 1rem; margin: .5rem 0; max-height: 26rem; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.transcript .lines li { padding: .25rem 0; line-height: 1.45; }
+.transcript .lines li.agent b { color: var(--agent); }
+.transcript .lines li.person b { color: var(--accent); }

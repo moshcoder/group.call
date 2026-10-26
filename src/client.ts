@@ -17,6 +17,7 @@ export type ApiRoom = {
   live?: ApiPerson[]
   activity?: ApiActivity[]
 }
+export type ApiLine = { id: number; who: string; kind: 'person' | 'agent' | 'typed'; text: string; at: string }
 export type ApiMe = { name: string; email: string; dial_in: string; pass_until: string | null; room_limit: number; can_invite_agents: boolean; agents: string[]; rooms: ApiRoom[] }
 
 export class ApiError extends Error {
@@ -67,6 +68,11 @@ export class GroupCallClient {
   }
   remove(code: string): Promise<{ ok: boolean }> {
     return this.call('DELETE', `/api/v1/rooms/${encodeURIComponent(code)}`)
+  }
+  /** The room's transcript: the last `limit` lines, or the lines after line id `after`. */
+  transcript(code: string, after?: number, limit = 200): Promise<{ lines: ApiLine[] }> {
+    const q = new URLSearchParams({ limit: String(limit), ...(after !== undefined ? { after: String(after) } : {}) })
+    return this.call('GET', `/api/v1/rooms/${encodeURIComponent(code)}/transcript?${q}`)
   }
   /** Read a line aloud to everyone on the phone in the room. */
   say(code: string, text: string, as?: string): Promise<{ said: boolean; callers: number }> {

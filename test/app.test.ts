@@ -239,3 +239,24 @@ test('the copied invitation is plain words a text message can carry', async () =
   const { invitation } = await import('../src/html.ts')
   expect(invitation('Test', '+15106169327', '9474')).toBe('Join "Test" on group.call: call 510-616-9327, then key 9474#')
 })
+
+test('what people and agents say is written down live, per speaker, and served back', async () => {
+  const { call, event, svc, app } = setup()
+  const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Talk' })).json()) as any
+  const seen: string[] = []
+  svc.subscribe(room.code, (e) => e.type === 'line' && seen.push(`${e.who}: ${e.text}`))
+  svc.line!.expect(room.code, AGENT_CALLER, 'riotcoder')
+  await event('call.initiated', { call_control_id: 'leg-a', direction: 'incoming', from: AGENT_CALLER })
+  await event('call.gather.ended', { call_control_id: 'leg-a', digits: room.code })
+  await event('call.initiated', { call_control_id: 'leg-p', direction: 'incoming', from: '+15550001111' })
+  await event('call.gather.ended', { call_control_id: 'leg-p', digits: room.code })
+  await event('call.transcription', { call_control_id: 'leg-p', transcription_data: { transcript: 'riotcoder, what is two plus two?', is_final: true } })
+  await event('call.transcription', { call_control_id: 'leg-a', transcription_data: { transcript: 'Four.', is_final: true } })
+  await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/say`, { text: 'ok', as: 'Anthony' })
+  expect(seen).toEqual(['caller ending 11: riotcoder, what is two plus two?', 'riotcoder: Four.', 'Anthony: ok'])
+  const api = (await (await call('gc_op', 'GET', `/api/v1/rooms/${room.code}/transcript`)).json()) as any
+  expect(api.lines.map((l: any) => `${l.kind}/${l.who}: ${l.text}`)).toEqual(['person/caller ending 11: riotcoder, what is two plus two?', 'agent/riotcoder: Four.', 'typed/Anthony: ok'])
+  const newer = (await (await call('gc_op', 'GET', `/api/v1/rooms/${room.code}/transcript?after=${api.lines[1].id}`)).json()) as any
+  expect(newer.lines.map((l: any) => l.text)).toEqual(['ok'])
+  expect((await call('gc_guest', 'GET', `/api/v1/rooms/${room.code}/transcript`)).status).toBe(404)
+})

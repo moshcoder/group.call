@@ -32,6 +32,12 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
   )
   server.tool('room', 'One room: who is on the line right now (people and agents) and recent activity.', { code }, wrap(({ code }) => client.room(code)))
   server.tool(
+    'transcript',
+    "What has been said in a room, line by line with the speaker (people and agents, transcribed live; typed lines marked). Pass after = the last id you saw to get only newer lines.",
+    { code, after: z.number().int().optional(), limit: z.number().int().min(1).max(1000).default(200) },
+    wrap(({ code, after, limit }) => client.transcript(code, after, limit)),
+  )
+  server.tool(
     'say',
     'Read a line aloud to everyone on the phone in the room (text to speech). For agents that cannot place a call themselves. Returns said:false when nobody is on the line.',
     { code, text: z.string().min(1).max(500), as: z.string().max(40).optional().describe('Who it is from, read before the line') },

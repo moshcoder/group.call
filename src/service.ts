@@ -9,7 +9,7 @@
  */
 import { CoinPay } from '@profullstack/coinpay-onboard'
 import { GroupCall, newRoomCode, normalNumber, type Participant, type TelnyxEvent } from '@profullstack/group-call'
-import type { AgentInvite, Pass, Room, RoomEvent, Store, User } from './db.js'
+import type { AgentInvite, Line, Pass, Room, RoomEvent, Store, User } from './db.js'
 
 export class UserError extends Error {
   constructor(
@@ -43,6 +43,8 @@ export type Config = {
   agentWorkerKey?: string
   /** Our agents' shared caller id, so the room can name them when they arrive. */
   agentCallerId?: string
+  /** Transcribe every leg (Telnyx, per minute per leg). On by default. */
+  transcribe?: boolean
   origin?: string
   fetch?: typeof fetch
 }
@@ -69,7 +71,7 @@ export const formatNumber = (e164: string) => {
 /** One tap from a phone: dial, wait for the prompt, key the code. */
 export const telLink = (dialIn: string, code: string) => `tel:${dialIn},,,${code}%23`
 
-export type LiveEvent = { type: 'join' | 'leave' | 'say' | 'invite'; code: string; who: string; text?: string; callers: number; at: number }
+export type LiveEvent = { type: 'join' | 'leave' | 'say' | 'invite' | 'line'; code: string; who: string; text?: string; callers: number; at: number; line?: Line }
 
 /** A participant as a page or the API may see them: a name, or a masked number. */
 export function shownParticipant(p: Participant, agentCallerId?: string): { name: string; kind: 'agent' | 'person'; since: number } {
@@ -107,6 +109,11 @@ export class GroupCallService {
             },
             onJoin: (code, who, info) => this.record(code, 'join', who, info.callers),
             onLeave: (code, who, info) => this.record(code, 'leave', who, info.callers),
+            ...(config.transcribe === false ? {} : { transcribe: { engine: 'Deepgram', language: 'en' } }),
+            onTranscript: (code, who, text) => {
+              const shown = shownParticipant(who, this.config.agentCallerId)
+              this.addLine(code, shown.name, shown.kind, text)
+            },
             onEvent: (line) => console.log(line),
           })
         : null
@@ -116,6 +123,17 @@ export class GroupCallService {
     const shown = shownParticipant(who, this.config.agentCallerId)
     this.store.addEvent({ code, kind, who: shown.name, text: '' })
     this.emit({ type: kind, code, who: shown.name, callers, at: Date.now() })
+  }
+
+  /** A line into the transcript, and out to every open room page. */
+  private addLine(code: string, who: string, kind: Line['kind'], text: string): Line {
+    const line = this.store.addLine({ code, who, kind, text })
+    this.emit({ type: 'line', code, who, text, callers: this.line?.callersIn(code) ?? 0, at: line.at, line })
+    return line
+  }
+
+  transcript(user: User, code: string, opts: { after?: number; limit?: number } = {}): Line[] {
+    return this.store.transcript(this.ownRoom(user, code).code, opts)
   }
 
   // ---- live updates --------------------------------------------------------
@@ -212,6 +230,8 @@ export class GroupCallService {
     const who = (as ?? user.name ?? '').trim().slice(0, 40)
     const said = (await this.line?.say(room.code, who ? `${who} says: ${clean}` : clean)) ?? false
     if (said) {
+      // Read into the conference, not a caller's leg, so no transcription hears it: write it down here.
+      this.addLine(room.code, who || 'someone', 'typed', clean)
       this.store.addEvent({ code: room.code, kind: 'say', who: who || 'someone', text: clean })
       this.emit({ type: 'say', code: room.code, who: who || 'someone', text: clean, callers: this.line?.callersIn(room.code) ?? 0, at: Date.now() })
     }
