@@ -172,7 +172,11 @@ export class GroupCallService {
   }
 
   /** A line into the transcript, and out to every open room page. */
-  private addLine(code: string, who: string, kind: Line['kind'], text: string): Line {
+  private addLine(code: string, who: string, kind: Line['kind'], text: string): Line | null {
+    // Speech recognition sometimes finalizes the same phrase twice ("Tokyo," then "Tokyo."): keep one.
+    const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9 ]+/g, '').replace(/\s+/g, ' ').trim()
+    const since = Date.now() - 5000
+    if (this.store.transcript(code, { limit: 4 }).some((l) => l.who === who && l.at >= since && norm(l.text) === norm(text))) return null
     const line = this.store.addLine({ code, who, kind, text })
     this.emit({ type: 'line', code, who, text, callers: this.line?.callersIn(code) ?? 0, at: line.at, line })
     return line
