@@ -41,8 +41,11 @@ export type Config = {
   agentOperators?: string[]
   /** The worker that dials agents authenticates with this. */
   agentWorkerKey?: string
-  /** Our agents' shared caller id, so the room can name them when they arrive. */
-  agentCallerId?: string
+  /**
+   * The number each of our agents calls from. One number per agent, so a room
+   * can never put one agent's name on another's line.
+   */
+  agentCallerIds?: Record<string, string>
   /** Transcribe every leg (Telnyx, per minute per leg). On by default. */
   transcribe?: boolean
   origin?: string
@@ -74,8 +77,8 @@ export const telLink = (dialIn: string, code: string) => `tel:${dialIn},,,${code
 export type LiveEvent = { type: 'join' | 'leave' | 'say' | 'invite' | 'line'; code: string; who: string; text?: string; callers: number; at: number; line?: Line }
 
 /** A participant as a page or the API may see them: a name, or a masked number. */
-export function shownParticipant(p: Participant, agentCallerId?: string): { name: string; kind: 'agent' | 'person'; since: number } {
-  const agent = Boolean(p.name) || (agentCallerId !== undefined && normalNumber(p.from) === normalNumber(agentCallerId))
+export function shownParticipant(p: Participant, agentNumbers: string[] = []): { name: string; kind: 'agent' | 'person'; since: number } {
+  const agent = Boolean(p.name) || agentNumbers.some((n) => normalNumber(n) === normalNumber(p.from))
   const masked = p.from ? `caller ending ${p.from.replace(/\D/g, '').slice(-2)}` : 'a caller'
   return { name: p.name || (agent ? 'an agent' : masked), kind: agent ? 'agent' : 'person', since: p.joinedAt }
 }
@@ -85,10 +88,12 @@ export class GroupCallService {
   private readonly listeners = new Map<string, Set<(e: LiveEvent) => void>>()
   private readonly store: Store
   readonly config: Config
+  private readonly agentNumbers: string[]
 
   constructor(store: Store, config: Config) {
     this.store = store
     this.config = config
+    this.agentNumbers = Object.values(config.agentCallerIds ?? {})
     this.line =
       config.telnyxApiKey && config.telnyxPublicKey
         ? new GroupCall({
@@ -107,11 +112,17 @@ export class GroupCallService {
               store.touchRoom(code)
               return { welcome: `Welcome to ${room.name}. ` }
             },
-            onJoin: (code, who, info) => this.record(code, 'join', who, info.callers),
-            onLeave: (code, who, info) => this.record(code, 'leave', who, info.callers),
+            onJoin: (code, who, info) => {
+              if (info.conferenceId) store.saveLeg(code, info.conferenceId, info.startedAt, who)
+              this.record(code, 'join', who, info.callers)
+            },
+            onLeave: (code, who, info) => {
+              store.dropLeg(code, who.leg, info.callers === 0)
+              this.record(code, 'leave', who, info.callers)
+            },
             ...(config.transcribe === false ? {} : { transcribe: { engine: 'Deepgram', language: 'en' } }),
             onTranscript: (code, who, text) => {
-              const shown = shownParticipant(who, this.config.agentCallerId)
+              const shown = shownParticipant(who, this.agentNumbers)
               this.addLine(code, shown.name, shown.kind, text)
             },
             onEvent: (line) => console.log(line),
@@ -120,7 +131,7 @@ export class GroupCallService {
   }
 
   private record(code: string, kind: 'join' | 'leave', who: Participant, callers: number): void {
-    const shown = shownParticipant(who, this.config.agentCallerId)
+    const shown = shownParticipant(who, this.agentNumbers)
     this.store.addEvent({ code, kind, who: shown.name, text: '' })
     this.emit({ type: kind, code, who: shown.name, callers, at: Date.now() })
   }
@@ -173,9 +184,35 @@ export class GroupCallService {
     return true
   }
 
+  /**
+   * At boot: put back every room that was live when the last process stopped, so
+   * a deploy neither splits a room nor forgets who is in it.
+   */
+  async restore(): Promise<{ rooms: number; legs: number }> {
+    if (!this.line) return { rooms: 0, legs: 0 }
+    const saved = this.store.liveSnapshot()
+    if (saved.length === 0) return { rooms: 0, legs: 0 }
+    const result = await this.line.restore(saved)
+    const keep = new Map<string, Set<string>>()
+    for (const r of saved) if (this.line.callersIn(r.code) > 0) keep.set(r.code, new Set(this.line.participants(r.code).map((p) => p.leg)))
+    this.store.pruneLive(keep)
+    // Legs Telnyx had that the save missed are worth keeping too.
+    for (const [code, legs] of keep) {
+      const conf = saved.find((r) => r.code === code)!
+      for (const p of this.line.participants(code)) if (legs.has(p.leg)) this.store.saveLeg(code, conf.conferenceId, conf.startedAt, p)
+    }
+    return result
+  }
+
+  /** For an agent on the line: how many people (not agents) are still in the room. */
+  roomStatus(code: string): { people: number; agents: number; live: ReturnType<GroupCallService['live']> } {
+    const live = this.live(code)
+    return { people: live.filter((p) => p.kind === 'person').length, agents: live.filter((p) => p.kind === 'agent').length, live }
+  }
+
   live(code: string) {
     const people = this.line?.participants(code) ?? []
-    return people.map((p) => shownParticipant(p, this.config.agentCallerId))
+    return people.map((p) => shownParticipant(p, this.agentNumbers))
   }
 
   // ---- rooms ---------------------------------------------------------------
@@ -271,7 +308,7 @@ export class GroupCallService {
   }
 
   /** For the agent worker: the next agent to dial, with what it needs to get in. */
-  nextInvite(): (AgentInvite & { dial_in: string; room_name: string; brief: string }) | null {
+  nextInvite(): (AgentInvite & { dial_in: string; from: string; room_name: string; brief: string }) | null {
     const invite = this.store.claimInvite()
     if (!invite) return null
     const room = this.store.room(invite.code)
@@ -280,11 +317,13 @@ export class GroupCallService {
       return this.nextInvite()
     }
     // Named before it dials, so the room says "riotcoder" when it arrives.
-    if (this.config.agentCallerId) this.line?.expect(room.code, this.config.agentCallerId, invite.agent, 3 * 60_000)
+    const from = this.config.agentCallerIds?.[invite.agent]
+    if (from) this.line?.expect(room.code, from, invite.agent, 3 * 60_000)
     const people = this.live(room.code).map((p) => p.name)
     return {
       ...invite,
       dial_in: this.config.dialIn,
+      from: from ?? '',
       room_name: room.name,
       brief: `You were asked to join the group call "${room.name}". ${people.length ? `On the line now: ${people.join(', ')}.` : 'Nobody is on the line yet.'}`,
     }

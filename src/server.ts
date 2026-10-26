@@ -460,6 +460,11 @@ export function createApp(deps: Deps) {
     const invite = svc.nextInvite()
     return invite ? c.json(invite) : c.body(null, 204)
   })
+  /** For an agent on a call: is anybody (a person) still in the room? */
+  app.get('/api/v1/agent-queue/rooms/:code', (c) => {
+    if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
+    return c.json(svc.roomStatus(codeParam(c)))
+  })
   app.post('/api/v1/agent-queue/:id', async (c) => {
     if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
     const b = await body(c)
@@ -483,7 +488,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
     if (!env[name]) throw new Error(`${name} must be set`)
   }
   const list = (v: string | undefined) => (v ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
-  const { app } = createApp({
+  const { app, svc } = createApp({
     store,
     ...(env.GROUPCALL_ORIGIN ? { origin: env.GROUPCALL_ORIGIN } : {}),
     config: {
@@ -500,11 +505,21 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ...(env.GROUPCALL_VOICE_KEY_REF ? { telnyxVoiceKeyRef: env.GROUPCALL_VOICE_KEY_REF } : {}),
       agentOperators: list(env.GROUPCALL_AGENT_OPERATORS),
       ...(env.GROUPCALL_AGENT_WORKER_KEY ? { agentWorkerKey: env.GROUPCALL_AGENT_WORKER_KEY } : {}),
-      ...(env.GROUPCALL_AGENT_CALLER_ID ? { agentCallerId: env.GROUPCALL_AGENT_CALLER_ID } : {}),
+      agentCallerIds: Object.fromEntries(
+        (env.GROUPCALL_AGENT_CALLER_IDS ?? '')
+          .split(',')
+          .map((pair) => pair.split('=').map((x) => x.trim()))
+          .filter((kv): kv is [string, string] => kv.length === 2 && Boolean(kv[0]) && Boolean(kv[1])),
+      ),
       transcribe: (env.GROUPCALL_TRANSCRIBE ?? '1') !== '0',
     },
   })
   const trustProxy = (env.GROUPCALL_TRUST_PROXY ?? '1') === '1'
+  // Rooms that were live when the last process stopped come back before the first webhook is served.
+  void svc
+    .restore()
+    .then((r) => r.rooms && console.log(`group.call: restored ${r.rooms} room(s), ${r.legs} on the line`))
+    .catch((e) => console.error('group.call: restore failed:', e))
   startRingRefresh()
   startPitFooterRefresh(SELF)
   startRingFooterRefresh()

@@ -93,6 +93,14 @@ export class Store {
         at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS transcript_lines_code ON transcript_lines(code, id);
+      CREATE TABLE IF NOT EXISTS live_rooms (code TEXT PRIMARY KEY, conference_id TEXT NOT NULL, started_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS live_legs (
+        leg TEXT PRIMARY KEY,
+        code TEXT NOT NULL,
+        from_number TEXT NOT NULL DEFAULT '',
+        name TEXT NOT NULL DEFAULT '',
+        joined_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS agent_invites (
         id TEXT PRIMARY KEY,
         code TEXT NOT NULL,
@@ -246,6 +254,50 @@ export class Store {
       ? this.db.query('SELECT * FROM transcript_lines WHERE code = ? AND id > ? ORDER BY id LIMIT ?').all(code, opts.after, limit)
       : this.db.query('SELECT * FROM (SELECT * FROM transcript_lines WHERE code = ? ORDER BY id DESC LIMIT ?) ORDER BY id').all(code, limit)) as any[]
     return rows.map((r) => ({ id: r.id, code: r.code, who: r.who, kind: r.kind, text: r.text, at: r.at }))
+  }
+
+  // ---- who is on the line, kept so a restart can put it back -------------
+
+  saveLeg(code: string, conferenceId: string, startedAt: number, p: { leg: string; from: string; name: string; joinedAt: number }): void {
+    this.db.transaction(() => {
+      this.db.query('INSERT INTO live_rooms (code, conference_id, started_at) VALUES (?, ?, ?) ON CONFLICT(code) DO UPDATE SET conference_id = excluded.conference_id, started_at = excluded.started_at').run(code, conferenceId, startedAt)
+      this.db.query('INSERT OR REPLACE INTO live_legs (leg, code, from_number, name, joined_at) VALUES (?, ?, ?, ?, ?)').run(p.leg, code, p.from, p.name, p.joinedAt)
+    })()
+  }
+
+  dropLeg(code: string, leg: string, roomEmpty: boolean): void {
+    this.db.transaction(() => {
+      this.db.query('DELETE FROM live_legs WHERE leg = ?').run(leg)
+      if (roomEmpty) {
+        this.db.query('DELETE FROM live_rooms WHERE code = ?').run(code)
+        this.db.query('DELETE FROM live_legs WHERE code = ?').run(code)
+      }
+    })()
+  }
+
+  liveSnapshot(): { code: string; conferenceId: string; startedAt: number; participants: { leg: string; from: string; name: string; joinedAt: number }[] }[] {
+    const rooms = this.db.query('SELECT * FROM live_rooms').all() as any[]
+    return rooms.map((r) => ({
+      code: r.code,
+      conferenceId: r.conference_id,
+      startedAt: r.started_at,
+      participants: (this.db.query('SELECT * FROM live_legs WHERE code = ?').all(r.code) as any[]).map((l) => ({ leg: l.leg, from: l.from_number, name: l.name, joinedAt: l.joined_at })),
+    }))
+  }
+
+  /** Keep only what a restore found still running. */
+  pruneLive(keep: Map<string, Set<string>>): void {
+    this.db.transaction(() => {
+      for (const r of this.db.query('SELECT code FROM live_rooms').all() as { code: string }[]) {
+        const legs = keep.get(r.code)
+        if (!legs) {
+          this.db.query('DELETE FROM live_rooms WHERE code = ?').run(r.code)
+          this.db.query('DELETE FROM live_legs WHERE code = ?').run(r.code)
+          continue
+        }
+        for (const l of this.db.query('SELECT leg FROM live_legs WHERE code = ?').all(r.code) as { leg: string }[]) if (!legs.has(l.leg)) this.db.query('DELETE FROM live_legs WHERE leg = ?').run(l.leg)
+      }
+    })()
   }
 
   // ---- agent invites -----------------------------------------------------
