@@ -370,3 +370,11 @@ test("an agent's words coming back through a person's speakerphone are not filed
   await event('call.transcription', { call_control_id: 'leg-p', transcription_data: { transcript: 'Can you check the report?', is_final: true } })
   expect(store.transcript(room.code).map((l) => l.text)).toEqual(['Sounds good. I could use a refill.', 'Can you check the report?'])
 })
+
+test("an agent calling from its own number is named by it even when no name was saved", async () => {
+  const { shownParticipant } = await import('../src/service.ts')
+  const numbers = { riotcoder: '+14159185508', cha0spunk: '+15107667447' }
+  expect(shownParticipant({ leg: 'l', from: '+14159185508', name: '', joinedAt: 0 }, numbers)).toMatchObject({ name: 'riotcoder', kind: 'agent' })
+  // qrypt.chat's shared caller id is a person unless named.
+  expect(shownParticipant({ leg: 'l', from: '+19492847328', name: '', joinedAt: 0 }, numbers)).toMatchObject({ name: 'caller ending 28', kind: 'person' })
+})
