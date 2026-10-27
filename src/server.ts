@@ -657,6 +657,13 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
     if (!env[name]) throw new Error(`${name} must be set`)
   }
   const list = (v: string | undefined) => (v ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+  // Operators are CoinPay subs. Emails are ignored (CoinPay emails are unverified).
+  const operatorList = (v: string | undefined) => {
+    const all = (v ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+    const emails = all.filter((s) => s.includes('@'))
+    if (emails.length) console.warn(`GROUPCALL_AGENT_OPERATORS: ignoring ${emails.length} email entr${emails.length === 1 ? 'y' : 'ies'}; list CoinPay subs instead`)
+    return all.filter((s) => !s.includes('@'))
+  }
   const { app, svc } = createApp({
     store,
     ...(env.GROUPCALL_ORIGIN ? { origin: env.GROUPCALL_ORIGIN } : {}),
@@ -673,7 +680,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ...(env.TELNYX_CONNECTION_ID ? { telnyxConnectionId: env.TELNYX_CONNECTION_ID } : {}),
       ...(env.GROUPCALL_VOICE ? { voice: env.GROUPCALL_VOICE } : {}),
       ...(env.GROUPCALL_VOICE_KEY_REF ? { telnyxVoiceKeyRef: env.GROUPCALL_VOICE_KEY_REF } : {}),
-      agentOperators: list(env.GROUPCALL_AGENT_OPERATORS),
+      agentOperators: operatorList(env.GROUPCALL_AGENT_OPERATORS),
       ...(env.GROUPCALL_AGENT_WORKER_KEY ? { agentWorkerKey: env.GROUPCALL_AGENT_WORKER_KEY } : {}),
       knownCallers: Object.fromEntries(
         (env.GROUPCALL_KNOWN_CALLERS ?? '')
