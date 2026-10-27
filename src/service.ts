@@ -42,7 +42,11 @@ export type Config = {
   /** Main prompt voice; an ElevenLabs voice needs telnyxVoiceKeyRef. */
   voice?: string
   telnyxVoiceKeyRef?: string
-  /** Who may ask our agents to dial in: CoinPay emails or subs. */
+  /**
+   * Who may ask our agents to dial in: CoinPay account ids (`sub`). Never emails:
+   * CoinPay does not verify the email it hands back, so anyone could register a
+   * CoinPay account under an operator's address.
+   */
   agentOperators?: string[]
   /** The worker that dials agents authenticates with this. */
   agentWorkerKey?: string
@@ -594,8 +598,9 @@ export class GroupCallService {
 
   mayInviteAgents(user: User | null): boolean {
     if (!user) return false
-    const ops = this.config.agentOperators ?? []
-    return ops.includes(user.sub) || (user.email !== '' && ops.includes(user.email.toLowerCase()))
+    // By CoinPay sub only. The email CoinPay returns is unverified (email_verified
+    // is always false), so an email in this list must never grant anything.
+    return (this.config.agentOperators ?? []).includes(user.sub)
   }
 
   inviteAgent(user: User, code: string, agent: string): AgentInvite {

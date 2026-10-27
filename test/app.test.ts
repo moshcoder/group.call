@@ -44,7 +44,7 @@ function setup(extra: Record<string, unknown> = {}) {
       telnyxPublicKey: keys.publicKey,
       dialIn: DIAL_IN,
       telnyxConnectionId: 'conn-gc',
-      agentOperators: ['op@example.com'],
+      agentOperators: ['sub-op'],
       agentWorkerKey: 'worker-secret',
       agentCallerIds: { riotcoder: AGENT_CALLER, cha0spunk: '+15107667447' },
       fetch: telnyx.fetch,
@@ -168,6 +168,17 @@ describe('the phone line', () => {
 })
 
 describe('agents', () => {
+  test('an operator is a CoinPay sub; a CoinPay account carrying an operator email gets nothing', async () => {
+    const { svc, store, op } = setup({ agentOperators: ['sub-op', 'op@example.com'] })
+    expect(svc.mayInviteAgents(op)).toBe(true)
+    // CoinPay never verifies emails: anyone can sign up there with the operator's address.
+    const thief = store.upsertUser('sub-thief', 'Mallory', 'op@example.com', { accessToken: 'a', refreshToken: null, expiresAt: 0 })
+    expect(svc.mayInviteAgents(thief)).toBe(false)
+    expect(svc.mayCallPhones(thief)).toBe(false)
+    expect(store.user('sub-op')?.email).toBe('op@example.com')
+    expect(() => svc.inviteAgent(thief, svc.createRoom(thief, { name: 'x' }).code, 'riotcoder')).toThrow()
+  })
+
   test('only operators can ask our agents in; the worker claims it once; the agent arrives named', async () => {
     const { call, event, svc, app } = setup()
     const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Agents' })).json()) as any
@@ -279,7 +290,7 @@ describe('a deploy does not touch a live room', () => {
       return new Response('{}')
     }) as unknown as typeof globalThis.fetch
     const store = new Store(':memory:', new Sealer('k'.repeat(32)))
-    const config = { key: 'k'.repeat(32), clientId: 'cp', coinpayBase: 'https://coinpayportal.com', telnyxApiKey: 'KEY', telnyxPublicKey: keys.publicKey, dialIn: DIAL_IN, agentCallerIds: { riotcoder: AGENT_CALLER, cha0spunk: '+15107667447' }, agentOperators: ['op@example.com'], agentWorkerKey: 'w', fetch }
+    const config = { key: 'k'.repeat(32), clientId: 'cp', coinpayBase: 'https://coinpayportal.com', telnyxApiKey: 'KEY', telnyxPublicKey: keys.publicKey, dialIn: DIAL_IN, agentCallerIds: { riotcoder: AGENT_CALLER, cha0spunk: '+15107667447' }, agentOperators: ['sub-op'], agentWorkerKey: 'w', fetch }
     const op = store.upsertUser('sub-op', 'Anthony', 'op@example.com', { accessToken: 'a', refreshToken: null, expiresAt: 0 })
     const signedEvent = (app: any) => async (event_type: string, payload: Record<string, unknown>) => {
       const raw = JSON.stringify({ data: { event_type, payload } })
