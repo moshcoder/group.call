@@ -76,6 +76,13 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
     { code, text: z.string().min(1).max(600) },
     wrap(({ code, text }) => client.text(code, text)),
   )
+  server.tool(
+    'link_smshub',
+    "Optional: send this account's group texts through its smshub.dev account (an smshub_ API key), as one smshub group per room from its own number. relay keeps replies going to the group after the call. Falls back to the room number if smshub cannot send.",
+    { key: z.string().regex(/^smshub_/), from: z.string().optional(), relay: z.boolean().optional() },
+    wrap(({ key, from, relay }) => client.linkSmshub(key, from, relay ?? false)),
+  )
+  server.tool('unlink_smshub', 'Stop sending group texts through smshub; they go from the room number again.', {}, wrap(() => client.unlinkSmshub()))
   server.tool('list_webhooks', 'Your webhook endpoints and the event types group.call sends.', {}, wrap(() => client.webhooks()))
   server.tool(
     'create_webhook',

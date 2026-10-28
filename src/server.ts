@@ -423,7 +423,27 @@ export function createApp(deps: Deps) {
 
   app.get('/me', async (c) => {
     const user = need(c, 'me')
-    return user instanceof Response ? user : page(c, mePage(ctxOf(c), { minutes: await svc.minutes(user), webhooks: await svc.hooks.listEndpoints(user.sub) }))
+    return user instanceof Response ? user : page(c, mePage(ctxOf(c), { minutes: await svc.minutes(user), webhooks: await svc.hooks.listEndpoints(user.sub), smshub: svc.smshubStatus(user) }))
+  })
+
+  // smshub.dev from the account page: link (key, number, relay) or unlink.
+  app.post('/me/smshub/:action{(link|unlink)}', async (c) => {
+    const user = need(c, 'me')
+    if (user instanceof Response) return user
+    const form = await formOf(c)
+    const show = async (flash: string, status = 200) => page(c, mePage(ctxOf(c), { flash, minutes: await svc.minutes(user), webhooks: await svc.hooks.listEndpoints(user.sub), smshub: svc.smshubStatus(user) }), status as 200)
+    if (!csrfOk(c, form.csrf)) return show('That form went stale. Try again.', 400)
+    if (!writeLimit.allow(`smshub:${user.sub}`)) return show('Too many changes. Wait a few minutes.', 429)
+    try {
+      if (c.req.param('action') === 'unlink') {
+        svc.unlinkSmshub(user)
+        return show('smshub unlinked: group texts go from the room number again.')
+      }
+      const r = await svc.linkSmshub(user, { key: form.key ?? '', from: form.from ?? '', relay: form.relay === '1' })
+      return show(`smshub linked: your rooms' group texts now go out as smshub groups${r.from ? ` from ${r.from}` : ''}.`)
+    } catch (e) {
+      return show(message(e), statusOf(e))
+    }
   })
 
   // Webhooks from the account page: add, test, rotate, delete. The API below does the same with a key.
@@ -509,6 +529,12 @@ export function createApp(deps: Deps) {
     hookOwner.set(c.req.raw, u.sub)
     return (await hooksApi(c.req.raw)) ?? c.json({ error: 'not found' }, 404)
   })
+  app.get('/api/v1/me/smshub', api((c, u) => c.json(svc.smshubStatus(u))))
+  app.post('/api/v1/me/smshub', api(async (c, u) => {
+    const b = await body(c)
+    return c.json(await svc.linkSmshub(u, { key: String(b.key ?? ''), from: b.from ? String(b.from) : '', relay: b.relay === true }))
+  }))
+  app.delete('/api/v1/me/smshub', api((c, u) => c.json(svc.unlinkSmshub(u))))
   app.all('/api/v1/webhooks', webhooksRoute)
   app.all('/api/v1/webhooks/*', webhooksRoute)
   app.post(
@@ -793,6 +819,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       recordingsDir: env.GROUPCALL_RECORDINGS ?? `${env.HOME}/.local/share/group-call/recordings`,
       ...(env.GROUPCALL_SIP_HOSTS ? { sipHosts: list(env.GROUPCALL_SIP_HOSTS) } : {}),
       ...(env.GROUPCALL_MESSAGING_PROFILE_ID ? { messagingProfileId: env.GROUPCALL_MESSAGING_PROFILE_ID } : {}),
+      ...(env.GROUPCALL_SMSHUB_URL ? { smshubUrl: env.GROUPCALL_SMSHUB_URL } : {}),
     },
   })
   const trustProxy = (env.GROUPCALL_TRUST_PROXY ?? '1') === '1'

@@ -165,6 +165,8 @@ export class Store {
     try {
       this.db.exec('ALTER TABLE rooms ADD COLUMN record INTEGER NOT NULL DEFAULT 0')
     } catch {}
+    // Optional: an account's own smshub.dev link, so its rooms' group texts go out as an smshub group.
+    this.db.exec('CREATE TABLE IF NOT EXISTS smshub_links (sub TEXT PRIMARY KEY, key_sealed TEXT NOT NULL, from_number TEXT, relay INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)')
     // Group texts: every number a room has texted, and whether it said STOP.
     this.db.exec('CREATE TABLE IF NOT EXISTS sms_numbers (number TEXT PRIMARY KEY, opted_out INTEGER NOT NULL DEFAULT 0, first_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)')
     // Added later: an agent that waits in the room with early callers until the host arrives.
@@ -260,6 +262,22 @@ export class Store {
 
   renameRoom(code: string, name: string): void {
     this.db.query('UPDATE rooms SET name = ? WHERE code = ?').run(name, code)
+  }
+
+  /** The account's smshub link, key unsealed; null when it has none. */
+  smshubLink(sub: string): { key: string; from: string | null; relay: boolean } | null {
+    const r = this.db.query('SELECT key_sealed, from_number, relay FROM smshub_links WHERE sub = ?').get(sub) as { key_sealed: string; from_number: string | null; relay: number } | null
+    return r ? { key: this.sealer.open(r.key_sealed), from: r.from_number, relay: r.relay === 1 } : null
+  }
+
+  setSmshubLink(sub: string, link: { key: string; from: string | null; relay: boolean } | null, now = Date.now()): void {
+    if (!link) {
+      this.db.query('DELETE FROM smshub_links WHERE sub = ?').run(sub)
+      return
+    }
+    this.db
+      .query('INSERT INTO smshub_links (sub, key_sealed, from_number, relay, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(sub) DO UPDATE SET key_sealed = excluded.key_sealed, from_number = excluded.from_number, relay = excluded.relay, updated_at = excluded.updated_at')
+      .run(sub, this.sealer.seal(link.key), link.from, link.relay ? 1 : 0, now)
   }
 
   /** Whether a number said STOP to our texts. */

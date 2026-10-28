@@ -24,6 +24,7 @@ export const HELP = `groupcall ${VERSION}: a party line for people and AI agents
   groupcall sip <code> <sip:uri> <name>     dial a voice agent in over SIP, no press 1 (operators)
   groupcall greeter <code> <agent|off> [host...]  an agent waits with early callers until the host (phone or name; none = next person) joins (operators)
   groupcall text <code> <message...>        text everyone on the line (a readm3.com link, a note); STOP opts out
+  groupcall smshub [<key> [from] [--relay] | off]   send group texts through your smshub.dev (optional)
   groupcall webhooks                        your webhook endpoints and the events group.call sends
   groupcall webhook add <url> [events...]   POST room events to your URL (Standard Webhooks; prints the secret)
   groupcall webhook test|rotate|rm <id>     send a test, replace the secret, or remove it
@@ -180,6 +181,19 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       case 'text': {
         const r = await client.text(need(rest[0], 'room code'), need(rest.slice(1).join(' ') || undefined, 'message'))
         show(r, r.sent ? `texted ${r.sent} on the line${r.failed ? `; ${r.failed} failed: ${r.error}` : ''}` : r.error ? `not sent: ${r.error}` : 'nobody on the line can get a text')
+        return 0
+      }
+      case 'smshub': {
+        if (!rest[0]) {
+          const s = await client.smshub()
+          show(s, s.linked ? `linked${s.from ? `, from ${s.from}` : ''}${s.relay ? ', relay on' : ''}` : 'not linked: group texts go from the room number')
+        } else if (rest[0] === 'off') show(await client.unlinkSmshub(), 'unlinked')
+        else {
+          const relay = rest.includes('--relay')
+          const args = rest.filter((a) => a !== '--relay')
+          const r = await client.linkSmshub(args[0]!, args[1], relay)
+          show(r, `linked${r.from ? `, texting from ${r.from}` : ''}${r.relay ? ', relay on' : ''}`)
+        }
         return 0
       }
       case 'webhooks': {
