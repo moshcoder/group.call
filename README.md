@@ -56,4 +56,32 @@ an exact-name nginx vhost with a cert from `pit-proxy-cert`. Deploy:
 `ssh root@dev2 'cd /opt/group.call && git pull && ./bin/install.sh'`. Settings are in
 `bin/install.conf`; secrets go in `~/.local/share/group-call/app.env` from the vault.
 
+### Least-cost routing
+
+Phones a room rings go out on the cheapest route that carries the number
+([least-cost routing](https://en.wikipedia.org/wiki/Least-cost_routing)), see `src/routing.ts`.
+A route is a Telnyx call-control app (tied to an outbound voice profile) with a rate deck:
+destination prefix to USD a minute, longest prefix wins. If a route will not place the call,
+the next cheapest is tried. A prefix priced `null` (or `-` in a CSV deck) is blocked, and
+nothing above the cap (`GROUPCALL_MAX_RATE`, default $0.05/min) is ever dialled.
+
+With only `TELNYX_CONNECTION_ID` set there is one route covering the US and Canada at $0.007/min,
+with Caribbean/Atlantic/Pacific `+1` area codes and premium 900/976 blocked. To add providers or
+countries, point `GROUPCALL_ROUTES` at a JSON file:
+
+```json
+{
+  "maxRate": 0.05,
+  "routes": [
+    { "provider": "telnyx", "connectionId": "3079268685966215111", "rates": { "1": 0.007 } },
+    { "provider": "telnyx-intl", "connectionId": "…", "from": "+44…", "deck": "intl.csv", "rates": { "1876": null } }
+  ]
+}
+```
+
+`deck` is a carrier rate deck (`prefix,rate` per line), read relative to the file; inline
+`rates` override it. Every room-placed call must also be allowed by its outbound voice
+profile's country whitelist on Telnyx. Quote before dialling: `groupcall rates +442079460000`,
+`GET /api/v1/rates?phone=`, MCP `quote_call`.
+
 MIT

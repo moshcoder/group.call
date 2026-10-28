@@ -51,9 +51,15 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
   )
   server.tool(
     'call_phone',
-    'Ring a phone into a room, so a person does not have to dial in. The call comes from the room number; whoever answers presses 1 and is in. US/Canada numbers; needs a room pass or operator account. Already on the call yourself? Send DTMF * then the number then # on your own leg and the room rings them the same way.',
+    'Ring a phone into a room, so a person does not have to dial in. The call comes from the room number; whoever answers presses 1 and is in. It goes out on the cheapest route that carries the number (see quote_call); US/Canada unless the instance routes more countries. Needs a room pass or operator account. Already on the call yourself? Send DTMF * then the number then # on your own leg and the room rings them the same way.',
     { code, phone: z.string().min(10).describe('e.g. 408-555-0101 or +14085550101'), name: z.string().max(40).optional().describe('Their name, so the room announces them') },
     wrap(({ code, phone, name }) => client.callPhone(code, phone, name)),
+  )
+  server.tool(
+    'quote_call',
+    'What a minute to a phone number costs before you ring it in: every route that carries it, cheapest first (least-cost routing; the cheapest is used, the next if it fails). An error means no route will carry it.',
+    { phone: z.string().min(8).describe('e.g. +14085550101 or +442079460000') },
+    wrap(({ phone }) => client.rates(phone)),
   )
   server.tool('invite_agent', "Ask one of the instance's own agents (riotcoder or cha0spunk) to dial in to a room. Operators only.", { code, agent: z.enum(['riotcoder', 'cha0spunk']) }, wrap(({ code, agent }) => client.invite(code, agent)))
   server.tool('create_invite', 'Make a single-use invite link to group.call (each person has a few). Whoever signs in through it and you both get bonus minutes.', { note: z.string().max(80).optional() }, wrap(({ note }) => client.newInvite(note)))

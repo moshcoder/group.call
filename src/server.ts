@@ -18,6 +18,7 @@ import { Sealer, Store, type Recording, type Room, type User } from './db.js'
 import { startPitFooterRefresh } from './pit-footer.js'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh } from './ring.js'
 import { ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
+import { loadRoutes } from './routing.js'
 import { AGENTS, CODE_LENGTH, formatNumber, GroupCallService, newApiKey, telLink, UserError, type Config, type LiveEvent } from './service.js'
 import { VERSION } from './version.js'
 
@@ -547,6 +548,14 @@ export function createApp(deps: Deps) {
       return c.json({ ok: true, dial_in: config.dialIn, code: param(c, 'code'), within_seconds: 120 })
     }),
   )
+  // What ringing a number in would cost: the routes that carry it, cheapest first (least-cost routing).
+  app.get(
+    '/api/v1/rates',
+    api((c) => {
+      const q = svc.quote(c.req.query('phone') ?? '')
+      return c.json({ to: q.to, max_rate: svc.router.maxRate, routes: q.choices.map((r) => ({ provider: r.provider, prefix: `+${r.prefix}`, usd_per_minute: r.rate })) })
+    }),
+  )
   app.post(
     '/api/v1/rooms/:code/call',
     api(async (c, u) => {
@@ -664,6 +673,8 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
     if (emails.length) console.warn(`GROUPCALL_AGENT_OPERATORS: ignoring ${emails.length} email entr${emails.length === 1 ? 'y' : 'ies'}; list CoinPay subs instead`)
     return all.filter((s) => !s.includes('@'))
   }
+  // Least-cost routing: several ways out, each with a rate deck. Unset, TELNYX_CONNECTION_ID calls the US and Canada.
+  const routesFile = env.GROUPCALL_ROUTES ? loadRoutes(env.GROUPCALL_ROUTES) : null
   const { app, svc } = createApp({
     store,
     ...(env.GROUPCALL_ORIGIN ? { origin: env.GROUPCALL_ORIGIN } : {}),
@@ -678,6 +689,8 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ...(env.TELNYX_PUBLIC_KEY ? { telnyxPublicKey: env.TELNYX_PUBLIC_KEY } : {}),
       dialIn: env.GROUPCALL_DIAL_IN!,
       ...(env.TELNYX_CONNECTION_ID ? { telnyxConnectionId: env.TELNYX_CONNECTION_ID } : {}),
+      ...(routesFile ? { routes: routesFile.routes } : {}),
+      ...(env.GROUPCALL_MAX_RATE ? { maxRate: Number(env.GROUPCALL_MAX_RATE) } : routesFile?.maxRate !== undefined ? { maxRate: routesFile.maxRate } : {}),
       ...(env.GROUPCALL_VOICE ? { voice: env.GROUPCALL_VOICE } : {}),
       ...(env.GROUPCALL_VOICE_KEY_REF ? { telnyxVoiceKeyRef: env.GROUPCALL_VOICE_KEY_REF } : {}),
       agentOperators: operatorList(env.GROUPCALL_AGENT_OPERATORS),

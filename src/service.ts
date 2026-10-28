@@ -12,6 +12,7 @@ import { Credits, sqliteStore } from '@profullstack/redeem-credits'
 import { Affiliates, sqliteStore as affiliateStore } from '@profullstack/affiliates'
 import { mkdirSync, unlinkSync } from 'node:fs'
 import { GroupCall, newRoomCode, normalNumber, type Participant, type Recording as SavedRecording, type TelnyxEvent } from '@profullstack/group-call'
+import { defaultDeck, Router, type Route, type RouteChoice } from './routing.js'
 import type { AgentInvite, Line, Pass, Recording, Room, RoomEvent, Store, User } from './db.js'
 
 export class UserError extends Error {
@@ -39,6 +40,14 @@ export type Config = {
   dialIn: string
   /** Telnyx call-control app id ("connection_id") that rings phones into rooms; without it, no dial-out. */
   telnyxConnectionId?: string
+  /**
+   * Ways out to the phone network, each with its rate deck: phones are rung on the
+   * cheapest one that will carry the number (least-cost routing, see routing.ts).
+   * Unset, it is telnyxConnectionId with a US/Canada deck.
+   */
+  routes?: Route[]
+  /** Dearest a minute a phone call-in may cost, USD. */
+  maxRate?: number
   /** Main prompt voice; an ElevenLabs voice needs telnyxVoiceKeyRef. */
   voice?: string
   telnyxVoiceKeyRef?: string
@@ -131,10 +140,13 @@ export class GroupCallService {
   private readonly calledIn = new Map<string, string>()
   /** When each room last rang phones from the keypad, for its hourly cap. */
   private readonly lineDials = new Map<string, number[]>()
+  readonly router: Router
 
   constructor(store: Store, config: Config) {
     this.store = store
     this.config = config
+    const routes = config.routes?.length ? config.routes : config.telnyxConnectionId ? [{ provider: 'telnyx', connectionId: config.telnyxConnectionId, rates: defaultDeck() }] : []
+    this.router = new Router(routes, config.maxRate)
     this.agentNumbers = config.agentCallerIds ?? {}
     this.credits = new Credits(sqliteStore(store.db as never))
     this.affiliates = new Affiliates(affiliateStore(store.db as never), { defaultQuota: INVITES_PER_PERSON })
@@ -278,12 +290,13 @@ export class GroupCallService {
   async callSip(user: User, code: string, uri: string, name: string, headers: Record<string, string> = {}): Promise<{ ringing: true; to: string }> {
     const room = this.ownRoom(user, code)
     if (!this.mayInviteAgents(user)) throw new UserError('Dialling a SIP agent in is for the operators of this instance.', undefined, 403)
-    if (!this.line || !this.config.telnyxConnectionId) throw new UserError('Calling out is not set up on this instance.', undefined, 503)
+    const connectionId = this.config.telnyxConnectionId ?? this.router.routes[0]?.connectionId
+    if (!this.line || !connectionId) throw new UserError('Calling out is not set up on this instance.', undefined, 503)
     const m = /^sips?:[^\s@]+@([^\s;:@]+)/i.exec(uri.trim())
     const hosts = this.config.sipHosts ?? ['sip.rtc.elevenlabs.io']
     if (!m || !hosts.includes(m[1]!.toLowerCase())) throw new UserError(`Only SIP agents at ${hosts.join(', ')}.`, 'sip')
     const clean = name.replace(/\s+/g, ' ').trim().slice(0, 40) || 'agent'
-    const placed = await this.line.dial(room.code, uri.trim(), { from: this.config.dialIn, connectionId: this.config.telnyxConnectionId, name: clean, direct: true, headers })
+    const placed = await this.line.dial(room.code, uri.trim(), { from: this.config.dialIn, connectionId, name: clean, direct: true, headers })
     if (!placed) throw new UserError('The call could not be placed. Try again in a minute.', 'sip', 502)
     this.store.addEvent({ code: room.code, kind: 'invite', who: clean, text: 'is being called in' })
     this.emit({ type: 'invite', code: room.code, who: clean, text: 'is being called in', callers: this.line.callersIn(room.code), at: Date.now() })
@@ -569,7 +582,7 @@ export class GroupCallService {
 
   /** Who may have a room call a phone: operators and room-pass holders (it is a paid outbound call). */
   mayCallPhones(user: User | null): boolean {
-    return Boolean(user && this.line && this.config.telnyxConnectionId) && (this.mayInviteAgents(user) || Boolean(this.store.passUntil(user!.sub)))
+    return Boolean(user && this.line && this.router.routes.length) && (this.mayInviteAgents(user) || Boolean(this.store.passUntil(user!.sub)))
   }
 
   /**
@@ -577,9 +590,10 @@ export class GroupCallService {
    * have to dial in. The call comes from the room's dial-in number, and the
    * answer presses 1 to join, so voicemail never lands in the room.
    */
-  async callPhone(user: User, code: string, phone: string, name = ''): Promise<{ ringing: true; to: string }> {
+  async callPhone(user: User, code: string, phone: string, name = ''): Promise<{ ringing: true; to: string; via: string; rate: number }> {
     const room = this.ownRoom(user, code)
-    if (!this.mayCallPhones(user)) throw new UserError(this.line && this.config.telnyxConnectionId ? `Calling a phone into a room comes with a room pass ($${PASS_USD} for ${PASS_DAYS} days).` : 'Calling phones is not set up on this instance.', 'phone', this.line && this.config.telnyxConnectionId ? 402 : 503)
+    const canDial = Boolean(this.line && this.router.routes.length)
+    if (!this.mayCallPhones(user)) throw new UserError(canDial ? `Calling a phone into a room comes with a room pass ($${PASS_USD} for ${PASS_DAYS} days).` : 'Calling phones is not set up on this instance.', 'phone', canDial ? 402 : 503)
     return this.ringIn(room, phone, user.name ?? '', name)
   }
 
@@ -604,9 +618,9 @@ export class GroupCallService {
       const r = await this.ringIn(room, digits, by.name.startsWith('caller ending') || by.name === 'a caller' ? '' : by.name, '', by.name)
       recent.push(now)
       this.lineDials.set(room.code, recent)
-      return `Calling ${r.to.replace(/\D/g, '').slice(-10).split('').join(' ')}. They join when they pick up and press 1.`
+      return `Calling ${r.to.replace(/\D/g, '').split('').join(' ')}. They join when they pick up and press 1.`
     } catch (e) {
-      if (e instanceof UserError) return e.message.replace(/, like 408-555-0101/, '')
+      if (e instanceof UserError) return e.message.replace(/, like [^.]+/, '')
       throw e
     }
   }
@@ -616,25 +630,47 @@ export class GroupCallService {
    * have to dial in. The call comes from the room's dial-in number, and the
    * answer presses 1 to join, so voicemail never lands in the room.
    */
-  private async ringIn(room: Room, phone: string, byName: string, name: string, askedBy = ''): Promise<{ ringing: true; to: string }> {
-    const to = normalNumber(phone)
-    // North American numbers only: an international dial-out is the classic way to run up a phone bill.
-    if (!/^\+1[2-9]\d{2}[2-9]\d{6}$/.test(to)) throw new UserError('Give a US or Canadian phone number, like 408-555-0101.', 'phone')
+  private async ringIn(room: Room, phone: string, byName: string, name: string, askedBy = ''): Promise<{ ringing: true; to: string; via: string; rate: number }> {
+    const { to, choices } = this.quote(phone)
     if (to === normalNumber(this.config.dialIn) || Object.values(this.agentNumbers).some((n) => normalNumber(n) === to)) throw new UserError('That is one of our own lines.', 'phone')
     const clean = name.replace(/\s+/g, ' ').trim().slice(0, 40)
-    const placed = await this.line!.dial(room.code, to, {
-      from: this.config.dialIn,
-      connectionId: this.config.telnyxConnectionId!,
-      prompt: `This is group call. ${byName ? `${byName} is` : 'Someone is'} calling you into ${room.name}.`,
-      welcome: `Welcome to ${room.name}. `,
-    })
+    // Cheapest route first; a route that will not place the call hands over to the next.
+    let placed: RouteChoice | null = null
+    for (const route of choices) {
+      const leg = await this.line!.dial(room.code, to, {
+        from: route.from ?? this.config.dialIn,
+        connectionId: route.connectionId,
+        prompt: `This is group call. ${byName ? `${byName} is` : 'Someone is'} calling you into ${room.name}.`,
+        welcome: `Welcome to ${room.name}. `,
+      })
+      if (leg) {
+        placed = route
+        break
+      }
+      console.warn(`group.call: ${route.provider} would not place a call to +${route.prefix}…, trying the next route`)
+    }
     if (!placed) throw new UserError('The call could not be placed. Try again in a minute.', 'phone', 502)
     if (clean) this.calledIn.set(to, clean)
     const shown = clean || `phone ending ${to.slice(-2)}`
     const text = askedBy ? `is being called in by ${askedBy}` : 'is being called in'
     this.store.addEvent({ code: room.code, kind: 'invite', who: shown, text })
     this.emit({ type: 'invite', code: room.code, who: shown, text, callers: this.line?.callersIn(room.code) ?? 0, at: Date.now() })
-    return { ringing: true, to: formatNumber(to) }
+    return { ringing: true, to: formatNumber(to), via: placed.provider, rate: placed.rate }
+  }
+
+  /**
+   * Where a call to `phone` would go and what a minute costs on each route,
+   * cheapest first. Throws when no route will carry it within the cap.
+   */
+  quote(phone: string): { to: string; choices: RouteChoice[] } {
+    const to = normalNumber(phone)
+    const nanp = /^\+1[2-9]\d{2}[2-9]\d{6}$/.test(to)
+    const usOnly = this.router.northAmericaOnly
+    const ask = usOnly ? 'Give a US or Canadian phone number, like 408-555-0101.' : 'Give the number with its country code, like +44 20 7946 0000.'
+    if (to.startsWith('+1') ? !nanp : !/^\+[2-9]\d{6,14}$/.test(to)) throw new UserError(ask, 'phone')
+    const choices = this.router.choices(to)
+    if (!choices.length) throw new UserError(usOnly ? ask : 'This instance does not call that country, or not at a price it will pay.', 'phone')
+    return { to, choices }
   }
 
   // ---- our agents ----------------------------------------------------------
