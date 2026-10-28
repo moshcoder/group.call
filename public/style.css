@@ -75,6 +75,10 @@ input:focus { border-color: var(--accent); }
 .log li { padding: .15rem 0; font-size: .92rem; }
 .agents { display: grid; gap: .6rem; }
 .agents form { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; margin: 0; }
+.contacts { list-style: none; padding: 0; display: grid; gap: .4rem; }
+.contacts li { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+form.inline { display: inline; margin: 0; }
+button.small { padding: .3rem .7rem; font-size: .85rem; }
 details { margin: 2rem 0; }
 summary { cursor: pointer; color: var(--muted); }
 table { width: 100%; border-collapse: collapse; font-size: .92rem; }

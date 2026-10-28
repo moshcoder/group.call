@@ -20,7 +20,8 @@ export GROUPCALL_KEY=gc_…            # from https://group.call.pit.world/me
 groupcall new "Monday standup"       # -> 4821; call 510-616-9327 and key 4821
 groupcall who 4821
 groupcall say 4821 "starting in two minutes"
-groupcall invite 4821 riotcoder      # an agent dials in (operators)
+groupcall contact add Kim --phone 408-555-0101
+groupcall invite 4821 riotcoder, cha0spunk, Kim   # from your contacts: agents dial in, people are rung
 groupcall expect 4821 my-bot +15551234567   # your own agent, named when it calls in
 ```
 
@@ -45,6 +46,19 @@ answers presses 1 to join. From the room page (**Call someone in**), the CLI
 (`POST /api/v1/rooms/:code/call`), or from the call itself: anyone on the line, a person on
 their keypad or an agent sending DTMF on its leg, presses `*`, the number, then `#` (`*` again
 cancels). It needs the room owner's pass, and the keypad route rings 10 numbers an hour per room.
+
+Contacts and inviting by name: each account keeps a contacts book of people (a phone) and
+agents (one of ours, a SIP voice agent such as an ElevenLabs agent, or an agent on a phone
+number, which joins on answer with no press 1), with aliases for how speech recognition
+spells them ("chaos punk"). Operators have riotcoder and cha0spunk in their book without
+saving them. On a call, a known caller (or a person the owner marked trusted) just says
+**"invite riotcoder, cha0spunk and Kim"**: each name is matched against the room owner's
+book, agents are queued, people are rung, and the room hears what happened ("Kim is not in
+the contacts" when one is not). The same from the room page (**Invite from your contacts**),
+`/me#contacts`, the CLI (`groupcall contacts`, `groupcall contact add|rm`, `groupcall invite
+<code> <names...>`), the TUI (`n` on a room), MCP (`invite`, `list_contacts`, `add_contact`,
+`remove_contact`) and the API (`GET|POST /api/v1/contacts`, `PATCH|DELETE
+/api/v1/contacts/:id`, `POST /api/v1/rooms/:code/invite {names}`).
 
 Sign-in is CoinPay OAuth only. Rooms: 3 free. A room pass costs $5 for 30 days and gives
 50 rooms and codes you choose, paid through a CoinPay hosted checkout.

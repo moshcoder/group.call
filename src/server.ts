@@ -326,6 +326,10 @@ export function createApp(deps: Deps) {
         const r = await svc.say(user, code, form.text ?? '')
         return roomView(c, user, room, r.said ? { flash: `Said to ${r.callers} on the line.` } : { error: 'Nobody is on the line to hear it.' })
       }
+      if (action === 'invite' && form.names) {
+        const r = await svc.inviteNames(user, code, form.names)
+        return roomView(c, user, room, r.results.some((x) => x.status === 'invited' || x.status === 'calling') ? { flash: r.said } : { error: r.said })
+      }
       if (action === 'invite') {
         const invite = svc.inviteAgent(user, code, form.agent ?? '')
         return roomView(c, user, room, { flash: `${invite.agent} will dial in shortly.` })
@@ -423,7 +427,27 @@ export function createApp(deps: Deps) {
 
   app.get('/me', async (c) => {
     const user = need(c, 'me')
-    return user instanceof Response ? user : page(c, mePage(ctxOf(c), { minutes: await svc.minutes(user), webhooks: await svc.hooks.listEndpoints(user.sub), smshub: svc.smshubStatus(user) }))
+    return user instanceof Response ? user : page(c, mePage(ctxOf(c), { minutes: await svc.minutes(user), webhooks: await svc.hooks.listEndpoints(user.sub), smshub: svc.smshubStatus(user), contacts: svc.book(user) }))
+  })
+
+  // The contacts book from the account page: add one, or remove one.
+  app.post('/me/contacts/:action{(add|delete)}', async (c) => {
+    const user = need(c, 'me')
+    if (user instanceof Response) return user
+    const form = await formOf(c)
+    const show = async (flash: string, status = 200) => page(c, mePage(ctxOf(c), { flash, minutes: await svc.minutes(user), webhooks: await svc.hooks.listEndpoints(user.sub), smshub: svc.smshubStatus(user), contacts: svc.book(user) }), status as 200)
+    if (!csrfOk(c, form.csrf)) return show('That form went stale. Try again.', 400)
+    if (!writeLimit.allow(`contacts:${user.sub}`)) return show('Too many changes. Wait a few minutes.', 429)
+    try {
+      if (c.req.param('action') === 'delete') {
+        svc.removeContact(user, form.id ?? '')
+        return show('Contact removed.')
+      }
+      const saved = svc.saveContact(user, { name: form.name, kind: form.kind, phone: form.phone, sip: form.sip, agent: form.agent, email: form.email, aliases: form.aliases ?? '', note: form.note ?? '', trusted: form.trusted === '1' })
+      return show(`${saved.name} is in your contacts. Say "invite ${saved.name}" on a call.`)
+    } catch (e) {
+      return show(message(e), statusOf(e))
+    }
   })
 
   // smshub.dev from the account page: link (key, number, relay) or unlink.
@@ -686,6 +710,27 @@ export function createApp(deps: Deps) {
       const rec = svc.ownRecording(u, param(c, 'file').replace(/\.mp3$/, ''))
       if (!rec) return c.json({ error: 'not found' }, 404)
       return mp3(rec)
+    }),
+  )
+  // The contacts book: people and agents to invite by name. Our own agents are listed for operators (builtin).
+  app.get('/api/v1/contacts', api((c, u) => c.json({ contacts: svc.book(u) })))
+  app.post('/api/v1/contacts', api(async (c, u) => c.json(svc.saveContact(u, await body(c)), 201)))
+  app.patch('/api/v1/contacts/:id', api(async (c, u) => c.json(svc.saveContact(u, await body(c), param(c, 'id')))))
+  app.delete(
+    '/api/v1/contacts/:id',
+    api((c, u) => {
+      svc.removeContact(u, param(c, 'id'))
+      return c.json({ ok: true })
+    }),
+  )
+  // "invite riotcoder, Kim": each name found in the book and dialled the way it is reached.
+  app.post(
+    '/api/v1/rooms/:code/invite',
+    api(async (c, u) => {
+      if (!dialLimit.allow(`call:${u.sub}`)) return c.json({ error: 'too many calls; 10 an hour' }, 429)
+      const b = await body(c)
+      const names = Array.isArray(b.names) ? b.names.map(String) : String(b.names ?? b.name ?? '')
+      return c.json(await svc.inviteNames(u, param(c, 'code'), names), 202)
     }),
   )
   app.post(

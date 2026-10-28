@@ -15,6 +15,7 @@ import { GroupCall, newRoomCode, normalNumber, type Participant, type Recording 
 import { defaultDeck, learnedPrefix, Router, type Route, type RouteChoice } from './routing.js'
 import type { AgentInvite, Line, Pass, Recording, Room, RoomEvent, Store, User } from './db.js'
 import { Webhooks, sqliteStore as webhookStore, type GuardOptions } from '@profullstack/webhooks'
+import { matchNames, spokenInvite, splitNames, type Contact } from './contacts.js'
 
 export class UserError extends Error {
   constructor(
@@ -94,10 +95,18 @@ export type Config = {
 }
 
 /** The agents that can be asked into a room, with the voice each speaks in. */
-export const AGENTS: Record<string, { about: string; voice: string }> = {
-  riotcoder: { about: 'Builds and ships things for Anthony. Voice: Chris.', voice: 'ElevenLabs Chris' },
-  cha0spunk: { about: 'Works the inbound queue: email, support, follow-ups. Voice: Jessica.', voice: 'ElevenLabs Jessica' },
+export const AGENTS: Record<string, { about: string; voice: string; aliases: string[] }> = {
+  riotcoder: { about: 'Builds and ships things for Anthony. Voice: Chris.', voice: 'ElevenLabs Chris', aliases: ['riot coder', 'riot'] },
+  cha0spunk: { about: 'Works the inbound queue: email, support, follow-ups. Voice: Jessica.', voice: 'ElevenLabs Jessica', aliases: ['chaos punk', 'chaos'] },
 }
+
+/** How many entries a contacts book holds. */
+export const MAX_CONTACTS = 500
+/** Most names one invite may ask for. */
+export const MAX_INVITE_NAMES = 8
+
+/** What happened to one name in an invite. */
+export type InviteResult = { name: string; heard: string; status: 'invited' | 'calling' | 'here' | 'unknown' | 'ambiguous' | 'failed'; how?: 'agent' | 'sip' | 'phone'; message: string }
 
 /** What group.call tells customer webhooks about. */
 export const WEBHOOK_EVENTS = ['room.joined', 'room.left', 'transcript.line', 'text.sent', 'phone.called', 'recording.ready']
@@ -238,6 +247,7 @@ export class GroupCallService {
               // An agent's voice coming back through a person's speakerphone is the agent, not them.
               if (shown.kind === 'person' && this.isEcho(code, text)) return
               this.addLine(code, shown.name, shown.kind, text)
+              if (shown.kind === 'person') void this.voiceInvite(code, who, text).catch((e) => console.error('group.call: voice invite:', e))
             },
             onRecording: (r) => void this.saveRecording(r).catch((e) => console.error('group call: recording:', e)),
             onEvent: (line) => console.log(line),
@@ -400,6 +410,10 @@ export class GroupCallService {
   async callSip(user: User, code: string, uri: string, name: string, headers: Record<string, string> = {}): Promise<{ ringing: true; to: string }> {
     const room = this.ownRoom(user, code)
     if (!this.mayInviteAgents(user)) throw new UserError('Dialling a SIP agent in is for the operators of this instance.', undefined, 403)
+    return this.dialSip(room, uri, name, headers)
+  }
+
+  private async dialSip(room: Room, uri: string, name: string, headers: Record<string, string> = {}, askedBy = ''): Promise<{ ringing: true; to: string }> {
     const connectionId = this.config.telnyxConnectionId ?? this.router.routes[0]?.connectionId
     if (!this.line || !connectionId) throw new UserError('Calling out is not set up on this instance.', undefined, 503)
     const m = /^sips?:[^\s@]+@([^\s;:@]+)/i.exec(uri.trim())
@@ -410,8 +424,9 @@ export class GroupCallService {
     const placed = await this.line.dial(room.code, uri.trim(), { from: this.config.dialIn, connectionId, name: clean, direct: true, headers })
     if (!placed) throw new UserError('The call could not be placed. Try again in a minute.', 'sip', 502)
     this.store.addDialled({ leg: placed.leg, code: room.code, to: uri.trim(), provider: 'sip', rate: SIP_RATE, placedAt: Date.now() })
-    this.store.addEvent({ code: room.code, kind: 'invite', who: clean, text: 'is being called in' })
-    this.emit({ type: 'invite', code: room.code, who: clean, text: 'is being called in', callers: this.line.callersIn(room.code), at: Date.now() })
+    const text = askedBy ? `is being called in by ${askedBy}` : 'is being called in'
+    this.store.addEvent({ code: room.code, kind: 'invite', who: clean, text })
+    this.emit({ type: 'invite', code: room.code, who: clean, text, callers: this.line.callersIn(room.code), at: Date.now() })
     return { ringing: true, to: m[1]! }
   }
 
@@ -753,7 +768,7 @@ export class GroupCallService {
    * have to dial in. The call comes from the room's dial-in number, and the
    * answer presses 1 to join, so voicemail never lands in the room.
    */
-  private async ringIn(room: Room, phone: string, byName: string, name: string, askedBy = ''): Promise<{ ringing: true; to: string; via: string; rate: number }> {
+  private async ringIn(room: Room, phone: string, byName: string, name: string, askedBy = '', direct = false): Promise<{ ringing: true; to: string; via: string; rate: number }> {
     const { to, choices } = this.quote(phone)
     if (to === normalNumber(this.config.dialIn) || Object.values(this.agentNumbers).some((n) => normalNumber(n) === to)) throw new UserError('That is one of our own lines.', 'phone')
     const clean = name.replace(/\s+/g, ' ').trim().slice(0, 40)
@@ -764,6 +779,8 @@ export class GroupCallService {
       const leg = await this.line!.dial(room.code, to, {
         from: route.from ?? this.config.dialIn,
         connectionId: route.connectionId,
+        // An agent on a phone number answers straight into the room: no press 1, named.
+        ...(direct ? { direct: true, name: clean || 'agent' } : {}),
         prompt: `This is group call. ${byName ? `${byName} is` : 'Someone is'} calling you into ${room.name}.`,
         welcome: `Welcome to ${room.name}. `,
       })
@@ -1005,15 +1022,150 @@ export class GroupCallService {
     const room = this.ownRoom(user, code)
     if (!this.mayInviteAgents(user)) throw new UserError('Inviting our agents is for the operators of this instance for now. Your own agents can dial in themselves: see /help#agents.', undefined, 403)
     if (!AGENTS[agent]) throw new UserError(`No agent called ${agent}. Try ${Object.keys(AGENTS).join(' or ')}.`, 'agent', 404)
+    return this.queueAgent(room, agent, user.sub)
+  }
+
+  private queueAgent(room: Room, agent: string, sub: string, askedBy = ''): AgentInvite {
     const open = this.store.openInvite(room.code, agent)
     // A "dialling" invite whose agent never showed up (its process died) must not block a new one.
     const onLine = this.live(room.code).some((p) => p.name === agent)
     if (open && (open.status === 'queued' || onLine || Date.now() - open.updatedAt < 2 * 60_000)) return open
     if (open) this.store.finishInvite(open.id, 'failed', 'the agent never arrived')
-    const invite = this.store.addInvite({ code: room.code, agent, sub: user.sub })
-    this.store.addEvent({ code: room.code, kind: 'invite', who: agent, text: 'asked to dial in' })
-    this.emit({ type: 'invite', code: room.code, who: agent, text: 'asked to dial in', callers: this.line?.callersIn(room.code) ?? 0, at: Date.now() })
+    const invite = this.store.addInvite({ code: room.code, agent, sub })
+    const text = askedBy ? `asked to dial in by ${askedBy}` : 'asked to dial in'
+    this.store.addEvent({ code: room.code, kind: 'invite', who: agent, text })
+    this.emit({ type: 'invite', code: room.code, who: agent, text, callers: this.line?.callersIn(room.code) ?? 0, at: Date.now() })
     return invite
+  }
+
+  // ---- the contacts book -----------------------------------------------------
+
+  /**
+   * Everyone an account can invite by name: what it saved, and for operators our own
+   * agents, who are in every operator's book without being saved (id "agent:<name>").
+   */
+  book(user: User): (Contact & { builtin?: boolean })[] {
+    const saved = this.store.contacts(user.sub)
+    const ours = this.mayInviteAgents(user)
+      ? Object.entries(AGENTS)
+          .filter(([name]) => !saved.some((c) => c.agent === name))
+          .map(([name, a]) => ({ id: `agent:${name}`, sub: user.sub, name, kind: 'agent' as const, phone: '', sip: '', agent: name, email: '', aliases: a.aliases, note: a.about, trusted: false, createdAt: 0, updatedAt: 0, builtin: true }))
+      : []
+    return [...ours, ...saved]
+  }
+
+  /** Add or change a contact. A person needs a phone; an agent needs one of ours, a SIP address or a phone. */
+  saveContact(user: User, input: Record<string, unknown>, id?: string): Contact {
+    const was = id ? this.store.contact(user.sub, id) : null
+    if (id && !was) throw new UserError('No such contact.', undefined, 404)
+    if (!was && this.store.contacts(user.sub).length >= MAX_CONTACTS) throw new UserError(`A contacts book holds ${MAX_CONTACTS}.`)
+    const str = (k: string, max: number) => (input[k] === undefined ? undefined : String(input[k] ?? '').replace(/\s+/g, ' ').trim().slice(0, max))
+    const name = str('name', 40) ?? was?.name ?? ''
+    if (!name) throw new UserError('Give the contact a name.', 'name')
+    const agent = (str('agent', 40) ?? was?.agent ?? '').toLowerCase()
+    if (agent && !AGENTS[agent]) throw new UserError(`No agent of ours called ${agent}. Ours are ${Object.keys(AGENTS).join(' and ')}.`, 'agent')
+    const sip = str('sip', 200) ?? was?.sip ?? ''
+    if (sip && !/^sips?:[^\s@]+@[^\s;:@]+/i.test(sip)) throw new UserError('A SIP address looks like sip:agent@sip.rtc.elevenlabs.io.', 'sip')
+    const rawPhone = str('phone', 30) ?? was?.phone ?? ''
+    const phone = rawPhone ? normalNumber(rawPhone) : ''
+    if (rawPhone && !/^\+[1-9]\d{6,14}$/.test(phone)) throw new UserError('Give the number with its area code, like 408-555-0101 or +44 20 7946 0000.', 'phone')
+    const email = str('email', 120) ?? was?.email ?? ''
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new UserError('That email does not look right.', 'email')
+    const kind = input.kind === 'agent' || input.kind === 'person' ? input.kind : agent || sip ? 'agent' : (was?.kind ?? 'person')
+    if (kind === 'person' && !phone) throw new UserError('A person needs a phone number to be called in.', 'phone')
+    if (kind === 'agent' && !agent && !sip && !phone) throw new UserError('An agent needs one of ours, a SIP address, or a phone number.', 'sip')
+    const aliasesIn = input.aliases === undefined ? undefined : Array.isArray(input.aliases) ? input.aliases.map(String) : String(input.aliases ?? '').split(',')
+    const aliases = (aliasesIn ?? was?.aliases ?? []).map((a) => a.replace(/\s+/g, ' ').trim().slice(0, 40)).filter(Boolean).slice(0, 8)
+    const note = str('note', 200) ?? was?.note ?? ''
+    const trusted = input.trusted === undefined ? (was?.trusted ?? false) : input.trusted === true || input.trusted === '1' || input.trusted === 'true'
+    return this.store.saveContact({ ...(was ? { id: was.id } : {}), sub: user.sub, name, kind, phone, sip, agent, email, aliases, note, trusted: kind === 'person' && trusted })
+  }
+
+  removeContact(user: User, id: string): void {
+    if (!this.store.removeContact(user.sub, id)) throw new UserError('No such contact.', undefined, 404)
+  }
+
+  /** Invite contacts into a room by name, from the web, the API, the CLI or MCP. */
+  async inviteNames(user: User, code: string, names: string | string[]): Promise<{ results: InviteResult[]; said: string }> {
+    const room = this.ownRoom(user, code)
+    const list = (Array.isArray(names) ? names.flatMap((n) => splitNames(String(n))) : splitNames(names)).slice(0, MAX_INVITE_NAMES)
+    if (!list.length) throw new UserError('Who should be invited? Names from your contacts, like "riotcoder, Kim".', 'names')
+    const results = await this.inviteFromBook(room, list, user.name || '')
+    return { results, said: summary(results) }
+  }
+
+  /**
+   * Somebody trusted on the line said "invite riotcoder and Kim": invite them from the
+   * room owner's book, and tell the room what happened. Only a known caller, or a person
+   * the owner marked trusted, may: invites cost the owner money and our agents' time.
+   */
+  private async voiceInvite(code: string, who: Participant, text: string): Promise<void> {
+    const names = spokenInvite(text)
+    if (!names) return
+    const room = this.store.room(code)
+    if (!room) return
+    const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
+    const from = who.from ? normalNumber(who.from) : ''
+    if (!this.trusted(shown.name, shown.kind) && !(from && this.store.trustedContact(room.sub, from))) return
+    const results = await this.inviteFromBook(room, names.slice(0, MAX_INVITE_NAMES), shown.name, true)
+    // Several names and not one in the book: overheard talk ("we went, invite only, to the party"), not a request.
+    if (names.length > 1 && results.every((r) => r.status === 'unknown')) return
+    const said = summary(results)
+    this.store.addEvent({ code, kind: 'say', who: 'group.call', text: said })
+    await this.line?.say(code, said)
+  }
+
+  private async inviteFromBook(room: Room, names: string[], askedBy: string, fromLine = false): Promise<InviteResult[]> {
+    const owner = this.store.user(room.sub)
+    if (!owner) return names.map((n) => ({ name: n, heard: n, status: 'failed', message: 'This room cannot invite anyone.' }))
+    const here = new Set(this.live(room.code).map((p) => p.name.toLowerCase()))
+    const results: InviteResult[] = []
+    for (const m of matchNames(names, this.book(owner))) {
+      const c = m.contact
+      if (!c) {
+        results.push(
+          m.ambiguous
+            ? { name: m.heard, heard: m.heard, status: 'ambiguous', message: `Which ${m.heard}: ${m.ambiguous.map((x) => x.name).join(' or ')}?` }
+            : { name: m.heard, heard: m.heard, status: 'unknown', message: `${m.heard} is not in the contacts.` },
+        )
+        continue
+      }
+      if (here.has(c.name.toLowerCase())) {
+        results.push({ name: c.name, heard: m.heard, status: 'here', message: `${c.name} is already here.` })
+        continue
+      }
+      results.push(await this.inviteContact(room, owner, c, m.heard, askedBy, fromLine))
+    }
+    return results
+  }
+
+  private async inviteContact(room: Room, owner: User, c: Contact, heard: string, askedBy: string, fromLine: boolean): Promise<InviteResult> {
+    const base = { name: c.name, heard }
+    const fail = (message: string): InviteResult => ({ ...base, status: 'failed', message })
+    try {
+      if (c.agent) {
+        if (!this.mayInviteAgents(owner)) return fail(`Inviting ${c.name} is for the operators of this instance.`)
+        this.queueAgent(room, c.agent, owner.sub, askedBy)
+        return { ...base, status: 'invited', how: 'agent', message: `${c.name} is dialling in.` }
+      }
+      if (c.sip) {
+        if (!this.mayInviteAgents(owner)) return fail(`Dialling ${c.name} in over SIP is for the operators of this instance.`)
+        await this.dialSip(room, c.sip, c.name, {}, askedBy)
+        return { ...base, status: 'calling', how: 'sip', message: `Calling ${c.name}.` }
+      }
+      if (!c.phone) return fail(`${c.name} has no number to call.`)
+      if (!this.mayCallPhones(owner)) return fail(`Calling ${c.name} needs a room pass.`)
+      if ((await this.minutes(owner)).left <= 0) return fail('This room has used its call minutes for the month.')
+      const now = Date.now()
+      const recent = (this.lineDials.get(room.code) ?? []).filter((t) => now - t < 60 * 60_000)
+      if (fromLine && recent.length >= LINE_DIALS_PER_HOUR) return fail(`This room has called ${LINE_DIALS_PER_HOUR} people in this hour.`)
+      await this.ringIn(room, c.phone, askedBy, c.name, askedBy, c.kind === 'agent')
+      if (fromLine) this.lineDials.set(room.code, [...recent, now])
+      return { ...base, status: 'calling', how: 'phone', message: c.kind === 'agent' ? `Calling ${c.name}.` : `Calling ${c.name}. They join when they pick up and press 1.` }
+    } catch (e) {
+      if (e instanceof UserError) return fail(`Could not call ${c.name}: ${e.message.replace(/, like [^.]+/, '')}`)
+      throw e
+    }
   }
 
   // ---- the greeter ---------------------------------------------------------
@@ -1146,6 +1298,11 @@ export class GroupCallService {
   events(code: string): RoomEvent[] {
     return this.store.events(code)
   }
+}
+
+/** One spoken sentence for a whole invite: "riotcoder is dialling in. Calling Kim. Bob is not in the contacts." */
+export function summary(results: InviteResult[]): string {
+  return results.map((r) => r.message).join(' ')
 }
 
 export function newApiKey(): string {
