@@ -13,9 +13,11 @@ import { Affiliates, sqliteStore as affiliateStore } from '@profullstack/affilia
 import { mkdirSync, unlinkSync } from 'node:fs'
 import { GroupCall, newRoomCode, normalNumber, type Participant, type Recording as SavedRecording, type TelnyxEvent } from '@profullstack/group-call'
 import { defaultDeck, learnedPrefix, Router, type Route, type RouteChoice } from './routing.js'
-import type { AgentInvite, Line, Pass, Recording, Room, RoomEvent, Store, User } from './db.js'
+import type { AgentInvite, AgentTask, Line, Pass, Recording, Room, RoomEvent, Store, User } from './db.js'
 import { Webhooks, sqliteStore as webhookStore, type GuardOptions } from '@profullstack/webhooks'
 import { matchNames, spokenInvite, splitNames, type Contact } from './contacts.js'
+import { callHeaders } from './agents.js'
+import type { ToolFn } from '@profullstack/voice-agent'
 
 export class UserError extends Error {
   constructor(
@@ -66,6 +68,14 @@ export type Config = {
   agentOperators?: string[]
   /** The worker that dials agents authenticates with this. */
   agentWorkerKey?: string
+  /**
+   * Our agents as ElevenLabs voice agents (src/agents.ts): agent -> SIP address. An agent
+   * listed here is dialled straight into the room over SIP; one that is not goes through
+   * the worker (agent-phone) as before.
+   */
+  agentSip?: Record<string, string>
+  /** What our voice agents send on every tool call (x-voice-agent-secret). */
+  agentToolSecret?: string
   /**
    * The number each of our agents calls from. One number per agent, so a room
    * can never put one agent's name on another's line.
@@ -227,6 +237,7 @@ export class GroupCallService {
               if (info.conferenceId && store.room(code)?.record) void this.startRecording(code, info.conferenceId)
               this.record(code, 'join', who, info.callers)
               this.maybeGreet(code, who)
+              this.arrived(code, who)
               // One leg per agent per room: a newer one replaces an older, so a restart or a
               // process that died without hanging up can never leave a silent twin behind.
               const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
@@ -1025,17 +1036,141 @@ export class GroupCallService {
     return this.queueAgent(room, agent, user.sub)
   }
 
-  private queueAgent(room: Room, agent: string, sub: string, askedBy = ''): AgentInvite {
+  private queueAgent(room: Room, agent: string, sub: string, askedBy = '', role: '' | 'greeter' = ''): AgentInvite {
     const open = this.store.openInvite(room.code, agent)
     // A "dialling" invite whose agent never showed up (its process died) must not block a new one.
     const onLine = this.live(room.code).some((p) => p.name === agent)
     if (open && (open.status === 'queued' || onLine || Date.now() - open.updatedAt < 2 * 60_000)) return open
     if (open) this.store.finishInvite(open.id, 'failed', 'the agent never arrived')
-    const invite = this.store.addInvite({ code: room.code, agent, sub })
-    const text = askedBy ? `asked to dial in by ${askedBy}` : 'asked to dial in'
+    const invite = this.store.addInvite({ code: room.code, agent, sub, role })
+    const text = role === 'greeter' ? 'is coming to greet' : askedBy ? `asked to dial in by ${askedBy}` : 'asked to dial in'
     this.store.addEvent({ code: room.code, kind: 'invite', who: agent, text })
     this.emit({ type: 'invite', code: room.code, who: agent, text, callers: this.line?.callersIn(room.code) ?? 0, at: Date.now() })
+    if (this.config.agentSip?.[agent]) {
+      // A voice agent: dialled now over SIP, not left for the worker.
+      this.store.finishInvite(invite.id, 'dialling', 'voice agent, dialling over SIP')
+      void this.dialVoiceAgent(invite, room, askedBy, role)
+      return this.store.invite(invite.id)!
+    }
     return invite
+  }
+
+  /** Ring one of our voice agents into a room, telling it over SIP headers which call this is and why. */
+  private async dialVoiceAgent(invite: AgentInvite, room: Room, askedBy: string, role: '' | 'greeter'): Promise<void> {
+    const people = this.live(room.code).map((p) => p.name)
+    const brief = role === 'greeter' ? `greet whoever arrives and keep them company until ${hostLabel(room)} joins` : askedBy ? `${askedBy} wants you on the call` : 'join the call and help'
+    const headers = callHeaders({ code: room.code, roomName: room.name, agent: invite.agent, askedBy, brief, role: role || 'guest', host: hostLabel(room), people })
+    try {
+      await this.dialSip(room, this.config.agentSip![invite.agent]!, invite.agent, headers, askedBy)
+    } catch (e) {
+      this.store.finishInvite(invite.id, 'failed', e instanceof Error ? e.message : String(e))
+      console.error(`group.call: ${invite.agent} could not be dialled into ${room.code}:`, e)
+    }
+  }
+
+  /** Somebody joined: a voice agent's invite is done; the host arriving sends a voice greeter home. */
+  private arrived(code: string, who: Participant): void {
+    const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
+    if (shown.kind === 'agent' && this.config.agentSip?.[shown.name]) {
+      const open = this.store.openInvite(code, shown.name)
+      if (open) this.store.finishInvite(open.id, 'done', 'on the call (voice agent)')
+      return
+    }
+    const room = this.store.room(code)
+    const greeter = room?.greeter
+    if (!room || !greeter || !this.config.agentSip?.[greeter] || !this.hostHere(code)) return
+    // It hears the host arrive and hands over itself (its prompt says so); if it has not left in 45 s, it is shown out.
+    setTimeout(() => {
+      if (!this.hostHere(code)) return
+      const leg = this.line?.participants(code).find((p) => shownParticipant(p, this.agentNumbers, this.config.knownCallers, this.calledIn).name === greeter)
+      if (leg) void this.line?.kick(code, leg.leg)
+    }, 45_000).unref?.()
+  }
+
+  // ---- our voice agents' tools -------------------------------------------------
+
+  /**
+   * Whether somebody the room trusts (a known caller, or a trusted contact of the owner)
+   * is on the line and spoke in the last two minutes: only they may have an agent act.
+   */
+  private trustedSpokeRecently(room: Room, now = Date.now()): string | null {
+    const trustedNames = new Set<string>()
+    for (const p of this.line?.participants(room.code) ?? []) {
+      const shown = shownParticipant(p, this.agentNumbers, this.config.knownCallers, this.calledIn)
+      if (shown.kind !== 'person') continue
+      const from = p.from ? normalNumber(p.from) : ''
+      if (this.trusted(shown.name, shown.kind) || (from && this.store.trustedContact(room.sub, from))) trustedNames.add(shown.name)
+    }
+    const line = this.store
+      .transcript(room.code, { limit: 30 })
+      .reverse()
+      .find((l) => l.kind === 'person' && l.at >= now - 2 * 60_000 && trustedNames.has(l.who))
+    return line?.who ?? null
+  }
+
+  /** The webhook tools our voice agents call (src/agents.ts), for @profullstack/voice-agent's toolHandler. */
+  agentTools(): Record<string, ToolFn> {
+    const roomOf = (ctx: Record<string, string>) => {
+      const room = this.store.room(String(ctx.room ?? '').replace(/\D/g, ''))
+      if (!room) throw new Error('That room is gone.')
+      const agent = String(ctx.agent ?? '')
+      if (!AGENTS[agent]) throw new Error('Unknown agent.')
+      return { room, agent }
+    }
+    const asker = (room: Room) => {
+      const who = this.trustedSpokeRecently(room)
+      if (!who) throw new Error('Only Anthony (or someone the room owner trusts) can ask me to do that, and they have not asked on this call in the last two minutes.')
+      return who
+    }
+    const str = (v: unknown, max: number) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max)
+    return {
+      room_status: (_args, { context }) => {
+        const { room } = roomOf(context)
+        const s = this.roomStatus(room.code)
+        return { room: room.name, people: s.live.filter((p) => p.kind === 'person').map((p) => p.name), agents: s.live.filter((p) => p.kind === 'agent').map((p) => p.name), host: s.host, host_here: s.host_here, recent: s.recent.map((l) => `${l.who}${l.trusted ? ' (trusted)' : ''}: ${l.text}`) }
+      },
+      take_task: (args, { context }) => {
+        const { room, agent } = roomOf(context)
+        const who = asker(room)
+        const brief = str(args.brief, 4000)
+        if (!brief) throw new Error('Say what the task is.')
+        const said = this.store
+          .transcript(room.code, { limit: 20 })
+          .map((l) => `${l.who}: ${l.text}`)
+          .join('\n')
+        const task = this.store.addTask({ agent, code: room.code, roomName: room.name, brief: `${brief}\n\n(Asked by ${who} on the group.call room "${room.name}".)`, ack: str(args.ack, 300), said })
+        this.store.addEvent({ code: room.code, kind: 'say', who: agent, text: `took a task: ${brief.slice(0, 120)}` })
+        return { ok: true, queued: task.id, note: 'It runs right after this; the result goes to Anthony in qrypt.chat.' }
+      },
+      call_in: async (args, { context }) => {
+        const { room, agent } = roomOf(context)
+        asker(room)
+        const phone = str(args.phone, 30)
+        const name = str(args.name, 40)
+        const said = await this.callInFromLine(room.code, { leg: '', from: '', name: agent, joinedAt: 0 }, phone.replace(/[^\d+]/g, ''))
+        if (name && /^Calling/.test(said)) this.calledIn.set(normalNumber(phone), name)
+        return { ok: /^Calling/.test(said), result: said }
+      },
+      invite: async (args, { context }) => {
+        const { room, agent } = roomOf(context)
+        asker(room)
+        const names = splitNames(str(args.names, 300)).slice(0, MAX_INVITE_NAMES)
+        if (!names.length) throw new Error('Who should I invite?')
+        const results = await this.inviteFromBook(room, names, agent, true)
+        return { ok: results.some((r) => r.status === 'invited' || r.status === 'calling'), result: summary(results) }
+      },
+      text_room: async (args, { context }) => {
+        const { room, agent } = roomOf(context)
+        asker(room)
+        const r = await this.textRoom(room.code, str(args.message, MAX_TEXT), { name: agent })
+        return { ok: r.sent > 0, sent: r.sent, ...(r.error ? { error: r.error } : {}) }
+      },
+    }
+  }
+
+  /** For the worker: the next task an agent took on a call, for its task runner. */
+  nextTask(): AgentTask | null {
+    return this.store.claimTask()
   }
 
   // ---- the contacts book -----------------------------------------------------
@@ -1211,9 +1346,7 @@ export class GroupCallService {
     const open = this.store.openInvite(code, room.greeter)
     if (open && Date.now() - open.updatedAt < 2 * 60_000) return
     if (open) this.store.finishInvite(open.id, 'failed', 'the agent never arrived')
-    this.store.addInvite({ code, agent: room.greeter, sub: room.sub, role: 'greeter' })
-    this.store.addEvent({ code, kind: 'invite', who: room.greeter, text: 'is coming to greet' })
-    this.emit({ type: 'invite', code, who: room.greeter, text: 'is coming to greet', callers: this.line?.callersIn(code) ?? 0, at: Date.now() })
+    this.queueAgent(room, room.greeter, room.sub, '', 'greeter')
   }
 
   /** For the agent worker: the next agent to dial, with what it needs to get in. */

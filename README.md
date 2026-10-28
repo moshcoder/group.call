@@ -33,8 +33,19 @@ keys a code on the keypad, and the engine puts them in that room's Telnyx confer
 app decides what a code means (a room someone made here), names callers it can, logs who
 comes and goes, and streams that to the room page.
 
-Agents join the way people do: they place a call to the number and key the code with DTMF.
-Ours (riotcoder, cha0spunk) run on the fleet box: a worker claims invites from
+Our agents (riotcoder, cha0spunk) are ElevenLabs voice agents built with
+[@profullstack/voice-agent](https://github.com/profullstack/voice-agent) (`src/agents.ts`):
+Claude Sonnet with real turn-taking, dialled straight into the room over SIP with X-Gc-*
+headers that say which room, who asked and why. During the call they act through group.call's
+agent tools (`/api/agent-tools/*`: room_status, take_task, call_in, invite, text_room), each
+allowed only when a trusted caller spoke in the last two minutes. take_task queues the work for
+the agent's task runner, which posts the result to qrypt.chat. Deploy or update both with
+`ELEVENLABS_API_KEY=... GROUPCALL_AGENT_TOOL_SECRET=... bun src/agents.ts`, then set the printed
+`GROUPCALL_AGENT_SIP` and the secret in app.env. Without `GROUPCALL_AGENT_SIP` they fall back
+to the older phone path below.
+
+Agents can also join the way people do: they place a call to the number and key the code with DTMF.
+The fallback for ours runs on the fleet box: a worker claims invites from
 `POST /api/v1/agent-queue/next` and runs `agent-phone join`. That process speaks with
 ElevenLabs voices through Telnyx and hears the room through Telnyx transcription. Anyone
 else's agent can do the same from any telephony API, after naming itself with

@@ -12,6 +12,7 @@
         "@profullstack/group-call": "^0.6.0",
         "@profullstack/hqtui": "^0.11.0",
         "@profullstack/redeem-credits": "^0.1.0",
+        "@profullstack/voice-agent": "0.1.0",
         "@profullstack/webhooks": "0.2.1",
         "hono": "^4.13.14",
         "zod": "^4.6.7",
@@ -43,6 +44,8 @@
     "@profullstack/redeem-credits": ["@profullstack/redeem-credits@0.1.0", "", { "bin": { "redeem-credits": "dist/cli.js" } }, "sha512-tRc0k6HNr7HCLvY7/UEbdF67b/fYll4/QT4ez/K9WtLrJ5DNBJrM5jlWlX1uy6G5mqUUyIC6A68g8Ut5oT3olA=="],
 
     "@profullstack/referrals": ["@profullstack/referrals@0.1.0", "", { "peerDependencies": { "react": ">=18" }, "optionalPeers": ["react"] }, "sha512-u66SdBVpsv3kc0N+NWISPoYD5vjCERyv5wfD07iSkZwQeC2IA+ihX5jNA4e7Xr+Y4AUvxLycG+3b4VaROqzgRg=="],
+
+    "@profullstack/voice-agent": ["@profullstack/voice-agent@0.1.0", "", { "bin": { "voice-agent": "dist/cli.js" } }, "sha512-1s7U9mDAdclNrM7ZHXQC6XKt7mwYgJ0lbkP0RweVBxD+HxNbisQmEVkB/0gbJvbHYr065M3e1nbo0wXEIlHHYA=="],
 
     "@profullstack/webhooks": ["@profullstack/webhooks@0.2.1", "", {}, "sha512-QHeSkpu4O44oJ620qhQqxqFlD3u/OhupmXRnBHw4MGKuDTa0R+Y/727nnF7psSHxxSfnbWfNuVl15z3IXuaZiw=="],
 
