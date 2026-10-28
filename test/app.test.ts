@@ -739,3 +739,65 @@ describe('the TUI', () => {
     expect(s.dialing).toBeNull()
   })
 })
+
+describe('the greeter', () => {
+  const worker = { authorization: 'Bearer worker-secret' }
+  const join = async (event: (t: string, p: Record<string, unknown>) => Promise<unknown>, leg: string, from: string, code: string) => {
+    await event('call.initiated', { call_control_id: leg, direction: 'incoming', from })
+    await event('call.gather.ended', { call_control_id: leg, digits: code })
+  }
+
+  test('somebody arrives before anyone else: the greeter is sent, keeps them company, and is told when the next person comes', async () => {
+    const { app, call, event } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Standup' })).json()) as any
+    const set = await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/greeter`, { agent: 'cha0spunk' })
+    expect(await set.json()).toEqual({ greeter: 'cha0spunk', host: null })
+    await join(event, 'leg-1', '+15550001111', room.code)
+    const next = (await (await app.request('/api/v1/agent-queue/next', { method: 'POST', headers: worker })).json()) as any
+    expect(next).toMatchObject({ agent: 'cha0spunk', code: room.code, role: 'greeter' })
+    expect(next.brief).toContain('receptionist')
+    expect(next.brief).toContain('the next person to join')
+    const status = async () => (await (await app.request(`/api/v1/agent-queue/rooms/${room.code}`, { headers: worker })).json()) as any
+    expect(await status()).toMatchObject({ greeter: 'cha0spunk', host_here: false })
+
+    // The greeter itself arriving is not a person waiting: nothing more is queued.
+    await join(event, 'leg-g', '+15107667447', room.code)
+    expect((await status()).host_here).toBe(false)
+    await join(event, 'leg-2', '+15550002222', room.code)
+    expect((await status()).host_here).toBe(true)
+    expect((await app.request('/api/v1/agent-queue/next', { method: 'POST', headers: worker })).status).toBe(204)
+  })
+
+  test('with a host number, only that number ends the shift, and a room whose host is already on gets no greeter', async () => {
+    const { app, call, event } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Interview' })).json()) as any
+    const set = (await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/greeter`, { agent: 'riotcoder', host: '(408) 656-2473' })).json()) as any
+    expect(set).toEqual({ greeter: 'riotcoder', host: '+14086562473' })
+    const status = async () => (await (await app.request(`/api/v1/agent-queue/rooms/${room.code}`, { headers: worker })).json()) as any
+    await join(event, 'leg-h', '+14086562473', room.code)
+    expect((await status()).host_here).toBe(true)
+    expect((await app.request('/api/v1/agent-queue/next', { method: 'POST', headers: worker })).status).toBe(204)
+    await event('call.hangup', { call_control_id: 'leg-h' })
+
+    await join(event, 'leg-1', '+15550001111', room.code)
+    await join(event, 'leg-2', '+15550002222', room.code)
+    expect((await status()).host_here).toBe(false)
+    const next = (await (await app.request('/api/v1/agent-queue/next', { method: 'POST', headers: worker })).json()) as any
+    expect(next.brief).toContain('408-656-2473')
+    expect((await app.request('/api/v1/agent-queue/next', { method: 'POST', headers: worker })).status).toBe(204)
+    await join(event, 'leg-h2', '+14086562473', room.code)
+    expect((await status()).host_here).toBe(true)
+  })
+
+  test('a greeter is for operators, and off turns it off', async () => {
+    const { call } = setup()
+    const mine = (await (await call('gc_guest', 'POST', '/api/v1/rooms', { name: 'mine' })).json()) as any
+    expect((await call('gc_guest', 'POST', `/api/v1/rooms/${mine.code}/greeter`, { agent: 'riotcoder' })).status).toBe(403)
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/greeter`, { agent: 'nobody' })).status).toBe(404)
+    await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/greeter`, { agent: 'riotcoder', host: 'riotcoder (host)' })
+    const r = (await (await call('gc_op', 'GET', `/api/v1/rooms/${room.code}`)).json()) as any
+    expect(r).toMatchObject({ greeter: 'riotcoder', host: 'riotcoder (host)' })
+    expect(await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/greeter`, { agent: 'off' })).json()).toEqual({ greeter: null, host: null })
+  })
+})

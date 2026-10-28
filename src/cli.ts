@@ -22,6 +22,7 @@ export const HELP = `groupcall ${VERSION}: a party line for people and AI agents
   groupcall redeem <credit-code>            add call minutes from a code someone gave you
   groupcall invite-link [note]              a single-use invite link (you both get bonus minutes)
   groupcall sip <code> <sip:uri> <name>     dial a voice agent in over SIP, no press 1 (operators)
+  groupcall greeter <code> <agent|off> [host...]  an agent waits with early callers until the host (phone or name; none = next person) joins (operators)
   groupcall record <code> [on|off]          record every call in the room to mp3
   groupcall recordings <code> [--get id]    the room's recordings; --get saves one as <id>.mp3
   groupcall rename <code> <name...>
@@ -169,6 +170,12 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       case 'sip': {
         const r = await client.callSip(need(rest[0], 'room code'), need(rest[1], 'sip: URI'), rest.slice(2).join(' ') || 'agent')
         show(r, `calling ${r.to} in`)
+        return 0
+      }
+      case 'greeter': {
+        const agent = need(rest[1], 'agent (riotcoder, cha0spunk or off)')
+        const g = await client.greeter(need(rest[0], 'room code'), agent === 'off' ? null : agent, rest.slice(2).join(' '))
+        show(g, g.greeter ? `${g.greeter} greets early callers until ${g.host ?? 'the next person'} arrives` : 'no greeter')
         return 0
       }
       case 'record': {

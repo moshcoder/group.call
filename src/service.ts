@@ -124,6 +124,9 @@ export const telLink = (dialIn: string, code: string) => `tel:${dialIn},,,${code
 export type LiveEvent = { type: 'join' | 'leave' | 'say' | 'invite' | 'line'; code: string; who: string; text?: string; callers: number; at: number; line?: Line }
 
 /** A participant as a page or the API may see them: a name, or a masked number. */
+/** Who a room's greeter waits for, in words. */
+export const hostLabel = (room: Room): string => (room.host ? (room.host.startsWith('+') ? `the person calling from ${formatNumber(room.host)}` : room.host) : 'the next person to join')
+
 export function shownParticipant(p: Participant, agentNumbers: Record<string, string> = {}, known: Record<string, string> = {}, calledIn: Map<string, string> = new Map()): { name: string; kind: 'agent' | 'person'; since: number; trusted?: boolean } {
   const knownName = Object.entries(known).find(([n]) => normalNumber(n) === normalNumber(p.from))?.[1]
   if (knownName && !p.name) return { name: knownName, kind: 'person', since: p.joinedAt, trusted: true }
@@ -187,6 +190,7 @@ export class GroupCallService {
               if (info.conferenceId) store.saveLeg(code, info.conferenceId, info.startedAt, who)
               if (info.conferenceId && store.room(code)?.record) void this.startRecording(code, info.conferenceId)
               this.record(code, 'join', who, info.callers)
+              this.maybeGreet(code, who)
               // One leg per agent per room: a newer one replaces an older, so a restart or a
               // process that died without hanging up can never leave a silent twin behind.
               const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
@@ -539,12 +543,13 @@ export class GroupCallService {
   /** For an agent on the line: how many people (not agents) are still in the room. */
   roomStatus(code: string) {
     const live = this.live(code)
+    const room = this.store.room(code)
     const trusted = new Set(Object.values(this.config.knownCallers ?? {}))
     // The last few lines with who said them, so an agent can tell whether a request came from someone it works for.
     const recent = this.store.transcript(code, { limit: 8 }).map((l) => ({ who: l.who, kind: l.kind, text: l.text, at: l.at, trusted: l.kind === 'person' && trusted.has(l.who) }))
     // The room's record is the agents' memory: a rejoining agent reads it and does not start over (SPEC-0001).
     const history = this.store.transcript(code, { limit: 80 }).map((l) => ({ who: l.who, kind: l.kind, text: l.text, at: l.at }))
-    return { people: live.filter((p) => p.kind === 'person').length, agents: live.filter((p) => p.kind === 'agent').length, live, recent, history, agentSeen: this.store.agentSeen(code) }
+    return { people: live.filter((p) => p.kind === 'person').length, agents: live.filter((p) => p.kind === 'agent').length, live, recent, history, agentSeen: this.store.agentSeen(code), greeter: room?.greeter ?? null, host: room ? hostLabel(room) : null, host_here: this.hostHere(code) }
   }
 
   /**
@@ -780,6 +785,54 @@ export class GroupCallService {
     return invite
   }
 
+  // ---- the greeter ---------------------------------------------------------
+
+  /**
+   * Give a room a greeter: one of our agents dials in when somebody arrives before the
+   * host, keeps them company, and leaves when the host joins. `host` is who ends its
+   * shift: a phone number, or a name on the line (a SIP agent like "riotcoder (host)");
+   * none means whoever joins next. Operators only, like inviting an agent.
+   */
+  setGreeter(user: User, code: string, agent: string | null, host = ''): { greeter: string | null; host: string | null } {
+    const room = this.ownRoom(user, code)
+    if (!this.mayInviteAgents(user)) throw new UserError('A greeter is one of our agents, which is for the operators of this instance for now.', undefined, 403)
+    const greeter = agent && agent !== 'off' ? agent : null
+    if (greeter && !AGENTS[greeter]) throw new UserError(`No agent called ${greeter}. Try ${Object.keys(AGENTS).join(' or ')}.`, 'greeter', 404)
+    const raw = host.replace(/\s+/g, ' ').trim().slice(0, 40)
+    const asNumber = raw.replace(/\D/g, '').length >= 10 && /^[\d\s()+.-]+$/.test(raw) ? normalNumber(raw) : ''
+    const who = greeter ? asNumber || raw || null : null
+    this.store.setGreeter(room.code, greeter, who)
+    return { greeter, host: who }
+  }
+
+  /** Whether whoever a greeter waits for is on the line: the room's host, or a second person when none is set. */
+  hostHere(code: string): boolean {
+    const room = this.store.room(code)
+    if (!room) return false
+    const legs = this.line?.participants(code) ?? []
+    const shown = legs.map((p) => ({ p, s: shownParticipant(p, this.agentNumbers, this.config.knownCallers, this.calledIn) }))
+    if (!room.host) return shown.filter((x) => x.s.kind === 'person').length >= 2
+    const host = room.host
+    if (host.startsWith('+')) return legs.some((p) => p.from && normalNumber(p.from) === host)
+    const want = host.toLowerCase()
+    return shown.some((x) => x.s.name !== room.greeter && x.s.name.toLowerCase().includes(want))
+  }
+
+  /** A person walked into a room with a greeter and nobody to meet them: send the greeter. */
+  private maybeGreet(code: string, who: Participant): void {
+    const room = this.store.room(code)
+    if (!room?.greeter || !AGENTS[room.greeter]) return
+    if (shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn).kind !== 'person') return
+    if (this.hostHere(code)) return
+    if (this.live(code).some((p) => p.name === room.greeter)) return
+    const open = this.store.openInvite(code, room.greeter)
+    if (open && Date.now() - open.updatedAt < 2 * 60_000) return
+    if (open) this.store.finishInvite(open.id, 'failed', 'the agent never arrived')
+    this.store.addInvite({ code, agent: room.greeter, sub: room.sub, role: 'greeter' })
+    this.store.addEvent({ code, kind: 'invite', who: room.greeter, text: 'is coming to greet' })
+    this.emit({ type: 'invite', code, who: room.greeter, text: 'is coming to greet', callers: this.line?.callersIn(code) ?? 0, at: Date.now() })
+  }
+
   /** For the agent worker: the next agent to dial, with what it needs to get in. */
   nextInvite(): (AgentInvite & { dial_in: string; from: string; room_name: string; brief: string }) | null {
     const invite = this.store.claimInvite()
@@ -798,7 +851,10 @@ export class GroupCallService {
       dial_in: this.config.dialIn,
       from: from ?? '',
       room_name: room.name,
-      brief: `You were asked to join the group call "${room.name}". ${people.length ? `On the line now: ${people.join(', ')}.` : 'Nobody is on the line yet.'}`,
+      brief:
+        invite.role === 'greeter'
+          ? `You are the receptionist for the group call "${room.name}". ${people.length ? `Waiting on the line: ${people.join(', ')}.` : 'Somebody just dialled in.'} The host (${hostLabel(room)}) is not here yet. Greet them warmly, tell them the host is on the way, and keep them company: answer whatever they say and chat with them until the host arrives. You will be told when the host joins; then hand over in one sentence and leave.`
+          : `You were asked to join the group call "${room.name}". ${people.length ? `On the line now: ${people.join(', ')}.` : 'Nobody is on the line yet.'}`,
     }
   }
 
