@@ -51,7 +51,7 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
   )
   server.tool(
     'call_phone',
-    'Ring a phone into a room, so a person does not have to dial in. The call comes from the room number; whoever answers presses 1 and is in. US/Canada numbers; needs a room pass or operator account.',
+    'Ring a phone into a room, so a person does not have to dial in. The call comes from the room number; whoever answers presses 1 and is in. US/Canada numbers; needs a room pass or operator account. Already on the call yourself? Send DTMF * then the number then # on your own leg and the room rings them the same way.',
     { code, phone: z.string().min(10).describe('e.g. 408-555-0101 or +14085550101'), name: z.string().max(40).optional().describe('Their name, so the room announces them') },
     wrap(({ code, phone, name }) => client.callPhone(code, phone, name)),
   )

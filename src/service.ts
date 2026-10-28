@@ -88,6 +88,8 @@ export const PASS_USD = 5
 export const PASS_DAYS = 30
 export const CODE_LENGTH = 4
 export const MAX_NAME = 60
+/** Phones a room may ring from the keypad (* number #) in an hour; the web and API have their own limit. */
+export const LINE_DIALS_PER_HOUR = 10
 
 /** A room's code shown for reading and dialling: "4821". */
 export const formatNumber = (e164: string) => {
@@ -127,6 +129,8 @@ export class GroupCallService {
   private readonly agentNumbers: Record<string, string>
   /** Phones a room rang, by number, with the name the owner gave them. */
   private readonly calledIn = new Map<string, string>()
+  /** When each room last rang phones from the keypad, for its hourly cap. */
+  private readonly lineDials = new Map<string, number[]>()
 
   constructor(store: Store, config: Config) {
     this.store = store
@@ -152,8 +156,9 @@ export class GroupCallService {
               const owner = store.user(room.sub)
               if (owner && (await this.minutes(owner)).left <= 0) return { reject: 'This room has used its call minutes for the month.' }
               store.touchRoom(code)
-              return { welcome: `Welcome to ${room.name}. ` }
+              return { welcome: `Welcome to ${room.name}. ${owner && this.mayCallPhones(owner) ? 'Press star to call someone in. ' : ''}` }
             },
+            onInvite: (code, who, digits) => this.callInFromLine(code, who, digits),
             onJoin: (code, who, info) => {
               if (info.conferenceId) store.saveLeg(code, info.conferenceId, info.startedAt, who)
               if (info.conferenceId && store.room(code)?.record) void this.startRecording(code, info.conferenceId)
@@ -575,6 +580,43 @@ export class GroupCallService {
   async callPhone(user: User, code: string, phone: string, name = ''): Promise<{ ringing: true; to: string }> {
     const room = this.ownRoom(user, code)
     if (!this.mayCallPhones(user)) throw new UserError(this.line && this.config.telnyxConnectionId ? `Calling a phone into a room comes with a room pass ($${PASS_USD} for ${PASS_DAYS} days).` : 'Calling phones is not set up on this instance.', 'phone', this.line && this.config.telnyxConnectionId ? 402 : 503)
+    return this.ringIn(room, phone, user.name ?? '', name)
+  }
+
+  /**
+   * Somebody on the line in a room keyed * number #: ring that number in. Anyone in
+   * the room may, person or agent, because they keyed the room's code to get there;
+   * the owner's pass pays for it, so the owner's pass is what is checked, and the
+   * room has its own hourly cap since nobody on the phone has an account to limit.
+   * What this returns is said to whoever keyed it.
+   */
+  async callInFromLine(code: string, who: Participant, digits: string): Promise<string> {
+    const room = this.store.room(code)
+    const owner = room ? this.store.user(room.sub) : null
+    if (!room || !owner) return 'This room cannot call anyone in.'
+    if (!this.mayCallPhones(owner)) return `Calling someone in from the phone comes with a room pass. The room's owner can get one on the website.`
+    if ((await this.minutes(owner)).left <= 0) return 'This room has used its call minutes for the month.'
+    const now = Date.now()
+    const recent = (this.lineDials.get(room.code) ?? []).filter((t) => now - t < 60 * 60_000)
+    if (recent.length >= LINE_DIALS_PER_HOUR) return `This room has called ${LINE_DIALS_PER_HOUR} people in this hour. Try again later.`
+    const by = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
+    try {
+      const r = await this.ringIn(room, digits, by.name.startsWith('caller ending') || by.name === 'a caller' ? '' : by.name, '', by.name)
+      recent.push(now)
+      this.lineDials.set(room.code, recent)
+      return `Calling ${r.to.replace(/\D/g, '').slice(-10).split('').join(' ')}. They join when they pick up and press 1.`
+    } catch (e) {
+      if (e instanceof UserError) return e.message.replace(/, like 408-555-0101/, '')
+      throw e
+    }
+  }
+
+  /**
+   * Ring a phone and bring whoever answers into the room, so a person does not
+   * have to dial in. The call comes from the room's dial-in number, and the
+   * answer presses 1 to join, so voicemail never lands in the room.
+   */
+  private async ringIn(room: Room, phone: string, byName: string, name: string, askedBy = ''): Promise<{ ringing: true; to: string }> {
     const to = normalNumber(phone)
     // North American numbers only: an international dial-out is the classic way to run up a phone bill.
     if (!/^\+1[2-9]\d{2}[2-9]\d{6}$/.test(to)) throw new UserError('Give a US or Canadian phone number, like 408-555-0101.', 'phone')
@@ -583,14 +625,15 @@ export class GroupCallService {
     const placed = await this.line!.dial(room.code, to, {
       from: this.config.dialIn,
       connectionId: this.config.telnyxConnectionId!,
-      prompt: `This is group call. ${user.name ? `${user.name} is` : 'Someone is'} calling you into ${room.name}.`,
+      prompt: `This is group call. ${byName ? `${byName} is` : 'Someone is'} calling you into ${room.name}.`,
       welcome: `Welcome to ${room.name}. `,
     })
     if (!placed) throw new UserError('The call could not be placed. Try again in a minute.', 'phone', 502)
     if (clean) this.calledIn.set(to, clean)
     const shown = clean || `phone ending ${to.slice(-2)}`
-    this.store.addEvent({ code: room.code, kind: 'invite', who: shown, text: 'is being called in' })
-    this.emit({ type: 'invite', code: room.code, who: shown, text: 'is being called in', callers: this.line?.callersIn(room.code) ?? 0, at: Date.now() })
+    const text = askedBy ? `is being called in by ${askedBy}` : 'is being called in'
+    this.store.addEvent({ code: room.code, kind: 'invite', who: shown, text })
+    this.emit({ type: 'invite', code: room.code, who: shown, text, callers: this.line?.callersIn(room.code) ?? 0, at: Date.now() })
     return { ringing: true, to: formatNumber(to) }
   }
 

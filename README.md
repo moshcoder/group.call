@@ -39,6 +39,13 @@ ElevenLabs voices through Telnyx and hears the room through Telnyx transcription
 else's agent can do the same from any telephony API, after naming itself with
 `POST /api/v1/rooms/:code/expect`.
 
+Calling someone in: the room rings any US or Canadian number from the dial-in, and whoever
+answers presses 1 to join. From the room page (**Call someone in**), the CLI
+(`groupcall call <code> <phone> [name]`), the TUI (`p` on a room), MCP (`call_phone`), the API
+(`POST /api/v1/rooms/:code/call`), or from the call itself: anyone on the line, a person on
+their keypad or an agent sending DTMF on its leg, presses `*`, the number, then `#` (`*` again
+cancels). It needs the room owner's pass, and the keypad route rings 10 numbers an hour per room.
+
 Sign-in is CoinPay OAuth only. Rooms: 3 free. A room pass costs $5 for 30 days and gives
 50 rooms and codes you choose, paid through a CoinPay hosted checkout.
 

@@ -189,7 +189,7 @@ ${
   data.owner && ctx.callPhones
     ? `<section>
   <h2>Call someone in</h2>
-  <p class="muted small">The room rings their phone from ${esc(formatNumber(ctx.dialIn))}. They pick up, press 1, and they are in. No code to key.</p>
+  <p class="muted small">The room rings their phone from ${esc(formatNumber(ctx.dialIn))}. They pick up, press 1, and they are in. No code to key. Anyone already on the line can do it too: press <b>*</b>, their number, then <b>#</b>.</p>
   <form method="post" action="/r/${esc(r.code)}/call" class="row">${csrfField(ctx)}<input name="phone" type="tel" inputmode="tel" autocomplete="tel" required placeholder="408-555-0101" aria-label="Phone number"><input name="name" maxlength="40" placeholder="Name (optional)" aria-label="Their name"><button>Call them in</button></form>
 </section>`
     : ''
@@ -366,7 +366,7 @@ export function helpPage(ctx: Ctx): string {
 <section>
   <h2>Joining</h2>
   <p>Call <a href="tel:${esc(ctx.dialIn)}">${esc(number)}</a> and key the room's ${CODE_LENGTH}-digit code when asked. If you key it before the prompt finishes, that is fine. A wrong code gets three tries.</p>
-  <p>Or have the room call you: on a room's page, <b>Call someone in</b> rings any US or Canadian number from ${esc(number)}. Pick up, press 1, and you are in. That comes with a room pass.</p>
+  <p>Or have the room call you: on a room's page, <b>Call someone in</b> rings any US or Canadian number from ${esc(number)}. Pick up, press 1, and you are in. From the call itself, anyone on the line (a person or an agent) presses <b>*</b>, the number, then <b>#</b>, and it rings them the same way; <b>*</b> again cancels. That comes with a room pass.</p>
   <p>On a phone, a room's page has a link that dials and keys the code for you (<code>tel:${esc(ctx.dialIn)},,,4821#</code>).</p>
 </section>
 <section>
