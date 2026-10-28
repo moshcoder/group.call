@@ -19,6 +19,7 @@ import { startPitFooterRefresh } from './pit-footer.js'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh } from './ring.js'
 import { ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
 import { loadRoutes } from './routing.js'
+import { webhooksApi } from '@profullstack/webhooks'
 import { AGENTS, CODE_LENGTH, formatNumber, GroupCallService, hostLabel, newApiKey, telLink, UserError, type Config, type LiveEvent } from './service.js'
 import { VERSION } from './version.js'
 
@@ -309,7 +310,7 @@ export function createApp(deps: Deps) {
     return rec && rec.code === codeParam(c) ? mp3(rec) : c.json({ error: 'not found' }, 404)
   })
 
-  app.post('/r/:code/:action{(say|invite|call|rename|delete|record|greeter)}', async (c) => {
+  app.post('/r/:code/:action{(say|invite|call|rename|delete|record|greeter|text)}', async (c) => {
     const user = need(c, `r/${codeParam(c)}`)
     if (user instanceof Response) return user
     const code = codeParam(c)
@@ -332,6 +333,10 @@ export function createApp(deps: Deps) {
       if (action === 'call') {
         const r = await svc.callPhone(user, code, form.phone ?? '', form.name ?? '')
         return roomView(c, user, room, { flash: `Ringing ${r.to}. Pick up and press 1 to join.` })
+      }
+      if (action === 'text') {
+        const r = await svc.textRoom(code, form.text ?? '', { name: user.name || 'The host' })
+        return roomView(c, user, room, r.sent ? { flash: `Texted ${r.sent} on the line.${r.failed ? ` ${r.failed} did not go: ${r.error}.` : ''}` } : { error: r.error ? `Not sent: ${r.error}.` : 'Nobody on the line has a number that can get a text.' })
       }
       if (action === 'greeter') {
         const g = svc.setGreeter(user, code, form.greeter ?? '', form.host ?? '')
@@ -401,6 +406,13 @@ export function createApp(deps: Deps) {
 
   // ---- the phone line ----------------------------------------------------------
 
+  // Texts to the room number (its messaging profile's webhook): STOP/START, and passing a link to the call.
+  app.post('/api/telnyx/sms', async (c) => {
+    const raw = await c.req.text()
+    const ok = await svc.inboundSms(raw, c.req.header('telnyx-signature-ed25519'), c.req.header('telnyx-timestamp'))
+    return ok ? c.json({ ok: true }) : c.json({ error: 'unsigned' }, 401)
+  })
+
   app.post('/api/telnyx/voice', async (c) => {
     const raw = await c.req.text()
     const ok = await svc.telnyx(raw, c.req.header('telnyx-signature-ed25519'), c.req.header('telnyx-timestamp'))
@@ -411,7 +423,34 @@ export function createApp(deps: Deps) {
 
   app.get('/me', async (c) => {
     const user = need(c, 'me')
-    return user instanceof Response ? user : page(c, mePage(ctxOf(c), { minutes: await svc.minutes(user) }))
+    return user instanceof Response ? user : page(c, mePage(ctxOf(c), { minutes: await svc.minutes(user), webhooks: await svc.hooks.listEndpoints(user.sub) }))
+  })
+
+  // Webhooks from the account page: add, test, rotate, delete. The API below does the same with a key.
+  app.post('/me/webhooks/:action{(add|test|rotate|delete)}', async (c) => {
+    const user = need(c, 'me')
+    if (user instanceof Response) return user
+    const form = await formOf(c)
+    const show = async (data: { flash?: string; webhookSecret?: string }, status = 200) => page(c, mePage(ctxOf(c), { ...data, minutes: await svc.minutes(user), webhooks: await svc.hooks.listEndpoints(user.sub) }), status as 200)
+    if (!csrfOk(c, form.csrf)) return show({ flash: 'That form went stale. Try again.' }, 400)
+    if (!writeLimit.allow(`wh:${user.sub}`)) return show({ flash: 'Too many changes. Wait a few minutes.' }, 429)
+    try {
+      const action = c.req.param('action')
+      if (action === 'add') {
+        const r = await svc.hooks.createEndpoint(user.sub, { url: form.url ?? '', events: form.events || undefined, description: form.description ?? '' })
+        return show({ flash: `Webhook added. Its signing secret is below, and stays available under "Show secret".`, webhookSecret: r.secret })
+      }
+      const id = form.id ?? ''
+      if (action === 'test') {
+        const r = await svc.hooks.test(user.sub, id)
+        return show({ flash: r.ok ? `Test delivered (HTTP ${r.status}).` : `Test failed: ${r.error}` })
+      }
+      if (action === 'rotate') return show({ flash: 'New signing secret below; the old one has stopped working.', webhookSecret: (await svc.hooks.rotateSecret(user.sub, id)).secret })
+      await svc.hooks.deleteEndpoint(user.sub, id)
+      return show({ flash: 'Webhook removed.' })
+    } catch (e) {
+      return show({ flash: message(e) }, statusOf(e))
+    }
   })
 
   app.post('/me/redeem', async (c) => {
@@ -462,6 +501,25 @@ export function createApp(deps: Deps) {
     }
   }
   const body = async (c: Context) => ((await c.req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>
+
+  // Customer webhooks: the @profullstack/webhooks API, scoped to the key's account.
+  const hookOwner = new WeakMap<Request, string>()
+  const hooksApi = webhooksApi(svc.hooks, { basePath: '/api/v1/webhooks', owner: (req) => hookOwner.get(req) })
+  const webhooksRoute = api(async (c, u) => {
+    hookOwner.set(c.req.raw, u.sub)
+    return (await hooksApi(c.req.raw)) ?? c.json({ error: 'not found' }, 404)
+  })
+  app.all('/api/v1/webhooks', webhooksRoute)
+  app.all('/api/v1/webhooks/*', webhooksRoute)
+  app.post(
+    '/api/v1/rooms/:code/text',
+    api(async (c, u) => {
+      if (!sayLimit.allow(`text:${u.sub}`)) return c.json({ error: 'too many texts; wait a minute' }, 429)
+      const room = store.room(param(c, 'code'))
+      if (!room || room.sub !== u.sub) return c.json({ error: 'no such room' }, 404)
+      return c.json(await svc.textRoom(room.code, String((await body(c)).text ?? ''), { name: u.name || 'The host' }))
+    }),
+  )
   const roomJson = (r: Room, full = false) => ({
     code: r.code,
     name: r.name,
@@ -625,6 +683,15 @@ export function createApp(deps: Deps) {
     return invite ? c.json(invite) : c.body(null, 204)
   })
   /** For an agent on a call: is anybody (a person) still in the room? */
+  app.post('/api/v1/agent-queue/rooms/:code/text', async (c) => {
+    if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
+    const b = await body(c)
+    try {
+      return c.json(await svc.textRoom(codeParam(c), String(b.text ?? ''), { name: String(b.agent ?? 'an agent').slice(0, 40) }))
+    } catch (e) {
+      return c.json({ error: message(e) }, statusOf(e) as 400)
+    }
+  })
   app.get('/api/v1/agent-queue/rooms/:code', (c) => {
     if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
     return c.json(svc.roomStatus(codeParam(c)))
@@ -725,6 +792,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       freeMinutes: Number(env.GROUPCALL_FREE_MINUTES ?? 300),
       recordingsDir: env.GROUPCALL_RECORDINGS ?? `${env.HOME}/.local/share/group-call/recordings`,
       ...(env.GROUPCALL_SIP_HOSTS ? { sipHosts: list(env.GROUPCALL_SIP_HOSTS) } : {}),
+      ...(env.GROUPCALL_MESSAGING_PROFILE_ID ? { messagingProfileId: env.GROUPCALL_MESSAGING_PROFILE_ID } : {}),
     },
   })
   const trustProxy = (env.GROUPCALL_TRUST_PROXY ?? '1') === '1'
@@ -733,6 +801,8 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
     .restore()
     .then((r) => r.rooms && console.log(`group.call: restored ${r.rooms} room(s), ${r.legs} on the line`))
     .catch((e) => console.error('group.call: restore failed:', e))
+  // Customer webhooks: deliveries waiting from before the restart go out now, then every 5 s.
+  svc.hooks.start()
   startRingRefresh()
   startPitFooterRefresh(SELF)
   startRingFooterRefresh()

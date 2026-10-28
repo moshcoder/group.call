@@ -11,6 +11,9 @@ function telnyxKeys() {
   return { privateKey, publicKey: publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64') }
 }
 
+/** How Telnyx answers a text: sent, or 40010 (no 10DLC campaign). */
+let smsReply: 'ok' | '40010' = 'ok'
+
 /** A fetch that records what Telnyx was asked; a conference creation answers with an id. */
 function telnyxRecorder() {
   const calls: { path: string; body: any }[] = []
@@ -18,6 +21,7 @@ function telnyxRecorder() {
     if (String(url).startsWith('https://files.test/')) return new Response(new Uint8Array([0x49, 0x44, 0x33, 1, 2, 3]), { status: 200 })
     const path = String(url).replace('https://api.telnyx.com/v2', '')
     calls.push({ path, body: JSON.parse(String(init?.body ?? '{}')) })
+    if (path === '/messages' && smsReply === '40010') return new Response(JSON.stringify({ errors: [{ code: '40010', title: 'Not 10DLC registered' }] }), { status: 400 })
     const json = path === '/conferences' ? { data: { id: 'conf-1' } } : path === '/calls' ? { data: { call_control_id: 'out-1' } } : {}
     return new Response(JSON.stringify(json), { status: 200 })
   }) as unknown as typeof globalThis.fetch
@@ -61,11 +65,11 @@ function setup(extra: Record<string, unknown> = {}) {
     app.request(path, { method, headers: { authorization: `Bearer ${key}`, ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
 
   /** A Telnyx event, signed the way Telnyx signs it. */
-  const event = async (event_type: string, payload: Record<string, unknown>) => {
+  const event = async (event_type: string, payload: Record<string, unknown>, route = '/api/telnyx/voice') => {
     const raw = JSON.stringify({ data: { event_type, payload } })
     const ts = String(Math.floor(Date.now() / 1000))
     const sig = signMessage(null, Buffer.from(`${ts}|${raw}`), keys.privateKey).toString('base64')
-    const r = await app.request('/api/telnyx/voice', { method: 'POST', body: raw, headers: { 'telnyx-signature-ed25519': sig, 'telnyx-timestamp': ts } })
+    const r = await app.request(route, { method: 'POST', body: raw, headers: { 'telnyx-signature-ed25519': sig, 'telnyx-timestamp': ts } })
     await new Promise((resolve) => setTimeout(resolve, 5))
     return r
   }
@@ -799,5 +803,90 @@ describe('the greeter', () => {
     const r = (await (await call('gc_op', 'GET', `/api/v1/rooms/${room.code}`)).json()) as any
     expect(r).toMatchObject({ greeter: 'riotcoder', host: 'riotcoder (host)' })
     expect(await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/greeter`, { agent: 'off' })).json()).toEqual({ greeter: null, host: null })
+  })
+})
+
+describe('group texts', () => {
+  const join = async (event: (t: string, p: Record<string, unknown>) => Promise<unknown>, leg: string, from: string, code: string) => {
+    await event('call.initiated', { call_control_id: leg, direction: 'incoming', from })
+    await event('call.gather.ended', { call_control_id: leg, digits: code })
+  }
+  const texts = (calls: { path: string; body: any }[]) => calls.filter((c) => c.path === '/messages').map((c) => ({ to: c.body.to, from: c.body.from, text: c.body.text as string }))
+
+  test('a link shared from the API is texted to every person on the line, once with the STOP notice, and the room hears it', async () => {
+    smsReply = 'ok'
+    const { call, event, telnyx, store } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Standup' })).json()) as any
+    await join(event, 'leg-1', '+14085550101', room.code)
+    await join(event, 'leg-2', '+14085550102', room.code)
+    await join(event, 'leg-a', AGENT_CALLER, room.code)
+    const r = (await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/text`, { text: 'The report: https://readm3.com/r/abc' })).json()) as any
+    expect(r).toEqual({ sent: 2, failed: 0, skipped: 0 })
+    const sent = texts(telnyx.calls)
+    expect(sent.map((t) => t.to).sort()).toEqual(['+14085550101', '+14085550102'])
+    expect(sent[0]!.from).toBe(DIAL_IN)
+    expect(sent[0]!.text).toStartWith('Anthony in Standup: The report: https://readm3.com/r/abc')
+    expect(sent[0]!.text).toContain('Reply STOP')
+    expect(telnyx.calls.some((c) => String(c.body.payload ?? '').includes('Anthony texted everyone on the call a link.'))).toBe(true)
+    expect(store.transcript(room.code).at(-1)?.text).toBe('(texted everyone) The report: https://readm3.com/r/abc')
+
+    await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/text`, { text: 'again' })
+    expect(texts(telnyx.calls).slice(2).every((t) => !t.text.includes('STOP'))).toBe(true)
+  })
+
+  test('somebody on the call texts the room number: everyone else gets it; STOP opts out', async () => {
+    smsReply = 'ok'
+    const { call, event, telnyx } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Standup' })).json()) as any
+    await join(event, 'leg-1', '+14086562473', room.code)
+    await join(event, 'leg-2', '+14085550102', room.code)
+    await join(event, 'leg-3', '+14085550103', room.code)
+    const sms = (from: string, text: string) => event('message.received', { from: { phone_number: from }, to: [{ phone_number: DIAL_IN }], text }, '/api/telnyx/sms')
+    expect((await sms('+14085550103', 'STOP')).status).toBe(200)
+    await sms('+14086562473', 'deck: https://readm3.com/f/xyz.pdf')
+    const sent = texts(telnyx.calls)
+    expect(sent.map((t) => t.to)).toEqual(['+14085550102'])
+    expect(sent[0]!.text).toStartWith('caller ending 73 in Standup: deck: https://readm3.com/f/xyz.pdf')
+    // A stranger who is on no call is not relayed anywhere.
+    await sms('+14155550199', 'hello?')
+    expect(texts(telnyx.calls).length).toBe(1)
+    await sms('+14085550103', 'START')
+    await sms('+14085550102', 'ok got it')
+    expect(texts(telnyx.calls).slice(1).map((t) => t.to).sort()).toEqual(['+14085550103', '+14086562473'])
+  })
+
+  test('a number without a carrier registration says why, instead of pretending', async () => {
+    smsReply = '40010'
+    const { call, event } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Standup' })).json()) as any
+    await join(event, 'leg-1', '+14085550101', room.code)
+    const r = (await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/text`, { text: 'hi' })).json()) as any
+    expect(r.sent).toBe(0)
+    expect(r.failed).toBe(1)
+    expect(r.error).toContain('10DLC')
+    smsReply = 'ok'
+  })
+})
+
+describe('webhooks', () => {
+  test('an account adds an endpoint and gets signed room events; the API is scoped to its key', async () => {
+    const { call, event, telnyx, svc } = setup({ webhookGuard: { lookup: async () => ['93.184.216.34'] } })
+    const created = await call('gc_op', 'POST', '/api/v1/webhooks', { url: 'https://hooks.example.com/gc', events: ['room.*', 'text.sent'] })
+    expect(created.status).toBe(201)
+    const { endpoint, secret } = (await created.json()) as any
+    expect(secret).toStartWith('whsec_')
+    expect(((await (await call('gc_guest', 'GET', '/api/v1/webhooks')).json()) as any).endpoints).toEqual([])
+    expect((await call('gc_guest', 'GET', `/api/v1/webhooks/${endpoint.id}`)).status).toBe(404)
+    expect((await call('gc_op', 'POST', '/api/v1/webhooks', { url: 'https://hooks.example.com/x', events: ['nope.*'] })).status).toBe(400)
+
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Standup' })).json()) as any
+    await event('call.initiated', { call_control_id: 'leg-1', direction: 'incoming', from: '+14085550101' })
+    await event('call.gather.ended', { call_control_id: 'leg-1', digits: room.code })
+    await svc.hooks.drain()
+    const got = telnyx.calls.filter((c) => c.path === 'https://hooks.example.com/gc')
+    expect(got.length).toBe(1)
+    expect(got[0]!.body).toMatchObject({ type: 'room.joined', source: expect.any(String), subject: `room:${room.code}`, data: { code: room.code, room: 'Standup', kind: 'person', callers: 1 } })
+    const log = ((await (await call('gc_op', 'GET', `/api/v1/webhooks/${endpoint.id}/deliveries`)).json()) as any).deliveries
+    expect(log[0]).toMatchObject({ event_type: 'room.joined', status: 'delivered' })
   })
 })

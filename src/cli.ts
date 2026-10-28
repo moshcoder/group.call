@@ -23,6 +23,11 @@ export const HELP = `groupcall ${VERSION}: a party line for people and AI agents
   groupcall invite-link [note]              a single-use invite link (you both get bonus minutes)
   groupcall sip <code> <sip:uri> <name>     dial a voice agent in over SIP, no press 1 (operators)
   groupcall greeter <code> <agent|off> [host...]  an agent waits with early callers until the host (phone or name; none = next person) joins (operators)
+  groupcall text <code> <message...>        text everyone on the line (a readm3.com link, a note); STOP opts out
+  groupcall webhooks                        your webhook endpoints and the events group.call sends
+  groupcall webhook add <url> [events...]   POST room events to your URL (Standard Webhooks; prints the secret)
+  groupcall webhook test|rotate|rm <id>     send a test, replace the secret, or remove it
+  groupcall webhook log [id]                recent deliveries
   groupcall record <code> [on|off]          record every call in the room to mp3
   groupcall recordings <code> [--get id]    the room's recordings; --get saves one as <id>.mp3
   groupcall rename <code> <name...>
@@ -170,6 +175,35 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       case 'sip': {
         const r = await client.callSip(need(rest[0], 'room code'), need(rest[1], 'sip: URI'), rest.slice(2).join(' ') || 'agent')
         show(r, `calling ${r.to} in`)
+        return 0
+      }
+      case 'text': {
+        const r = await client.text(need(rest[0], 'room code'), need(rest.slice(1).join(' ') || undefined, 'message'))
+        show(r, r.sent ? `texted ${r.sent} on the line${r.failed ? `; ${r.failed} failed: ${r.error}` : ''}` : r.error ? `not sent: ${r.error}` : 'nobody on the line can get a text')
+        return 0
+      }
+      case 'webhooks': {
+        const r = await client.webhooks()
+        show(r, [...r.endpoints.map((w) => `${w.id}  ${w.url}  ${w.events.join(',')}${w.enabled ? '' : `  OFF (${w.disabled_reason})`}`), `events: ${r.event_types.join(', ')}`].join('\n') || 'no webhooks')
+        return 0
+      }
+      case 'webhook': {
+        const sub = need(rest[0], 'add, test, rotate, rm or log')
+        if (sub === 'add') {
+          const r = await client.addWebhook(need(rest[1], 'url'), rest.slice(2))
+          show(r, `${r.endpoint.id} -> ${r.endpoint.url}\nsigning secret: ${r.secret}`)
+        } else if (sub === 'test') {
+          const r = await client.testWebhook(need(rest[1], 'webhook id'))
+          show(r, r.ok ? `delivered (HTTP ${r.status})` : `failed: ${r.error}`)
+        } else if (sub === 'rotate') {
+          const r = await client.rotateWebhook(need(rest[1], 'webhook id'))
+          show(r, `new signing secret: ${r.secret}`)
+        } else if (sub === 'rm' || sub === 'remove' || sub === 'delete') {
+          show(await client.removeWebhook(need(rest[1], 'webhook id')), 'removed')
+        } else if (sub === 'log') {
+          const r = await client.webhookLog(rest[1])
+          show(r, r.deliveries.map((d) => `${d.created_at.slice(0, 19)}  ${d.event_type.padEnd(16)} ${d.status.padEnd(9)} x${d.attempts} ${d.last_status ?? ''} ${d.last_error ?? ''}`).join('\n') || 'no deliveries yet')
+        } else throw new Error(`groupcall webhook ${sub}? try add, test, rotate, rm or log`)
         return 0
       }
       case 'greeter': {
