@@ -13,7 +13,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 
 export type User = { sub: string; name: string; email: string; apiKeyHash: string | null; createdAt: number }
 
-export type Room = { code: string; sub: string; name: string; createdAt: number; lastUsedAt: number | null; record: boolean }
+export type Room = { code: string; sub: string; name: string; createdAt: number; lastUsedAt: number | null; record: boolean; greeter: string | null; host: string | null }
 
 /** A recording of a room's call: started, then saved by Telnyx, then downloaded here. */
 export type Recording = { id: string; code: string; conferenceId: string; recordingId: string | null; status: 'recording' | 'saving' | 'ready' | 'failed'; path: string; bytes: number; durationSecs: number | null; startedAt: number; endedAt: number | null; note: string }
@@ -27,7 +27,7 @@ export type LegQuality = { code: string; leg: string; who: string; mosIn: number
 /** One line said in a room: transcribed from a caller's leg, or typed in and read aloud. */
 export type Line = { id: number; code: string; who: string; kind: 'person' | 'agent' | 'typed'; text: string; at: number }
 
-export type AgentInvite = { id: string; code: string; agent: string; sub: string; status: 'queued' | 'dialling' | 'done' | 'failed'; note: string; createdAt: number; updatedAt: number }
+export type AgentInvite = { id: string; code: string; agent: string; sub: string; role: string; status: 'queued' | 'dialling' | 'done' | 'failed'; note: string; createdAt: number; updatedAt: number }
 
 export type Pass = { id: string; sub: string; amountCents: number; status: string; checkoutUrl: string; days: number; paidAt: number | null; createdAt: number }
 
@@ -165,6 +165,12 @@ export class Store {
     try {
       this.db.exec('ALTER TABLE rooms ADD COLUMN record INTEGER NOT NULL DEFAULT 0')
     } catch {}
+    // Added later: an agent that waits in the room with early callers until the host arrives.
+    for (const sql of ['ALTER TABLE rooms ADD COLUMN greeter TEXT', 'ALTER TABLE rooms ADD COLUMN host TEXT', "ALTER TABLE agent_invites ADD COLUMN role TEXT NOT NULL DEFAULT ''"]) {
+      try {
+        this.db.exec(sql)
+      } catch {}
+    }
   }
 
   // ---- people ------------------------------------------------------------
@@ -230,7 +236,7 @@ export class Store {
   // ---- rooms -------------------------------------------------------------
 
   private toRoom(r: any): Room | null {
-    return r ? { code: r.code, sub: r.sub, name: r.name, createdAt: r.created_at, lastUsedAt: r.last_used_at, record: r.record === 1 } : null
+    return r ? { code: r.code, sub: r.sub, name: r.name, createdAt: r.created_at, lastUsedAt: r.last_used_at, record: r.record === 1, greeter: r.greeter ?? null, host: r.host ?? null } : null
   }
 
   addRoom(r: Pick<Room, 'code' | 'sub' | 'name'>, now = Date.now()): Room {
@@ -252,6 +258,10 @@ export class Store {
 
   renameRoom(code: string, name: string): void {
     this.db.query('UPDATE rooms SET name = ? WHERE code = ?').run(name, code)
+  }
+
+  setGreeter(code: string, greeter: string | null, host: string | null): void {
+    this.db.query('UPDATE rooms SET greeter = ?, host = ? WHERE code = ?').run(greeter, host, code)
   }
 
   setRecord(code: string, on: boolean): void {
@@ -444,12 +454,12 @@ export class Store {
   // ---- agent invites -----------------------------------------------------
 
   private toInvite(r: any): AgentInvite | null {
-    return r ? { id: r.id, code: r.code, agent: r.agent, sub: r.sub, status: r.status, note: r.note, createdAt: r.created_at, updatedAt: r.updated_at } : null
+    return r ? { id: r.id, code: r.code, agent: r.agent, sub: r.sub, role: r.role ?? '', status: r.status, note: r.note, createdAt: r.created_at, updatedAt: r.updated_at } : null
   }
 
-  addInvite(i: Pick<AgentInvite, 'code' | 'agent' | 'sub'>, now = Date.now()): AgentInvite {
+  addInvite(i: Pick<AgentInvite, 'code' | 'agent' | 'sub'> & { role?: string }, now = Date.now()): AgentInvite {
     const id = `inv_${randomBytes(9).toString('base64url')}`
-    this.db.query("INSERT INTO agent_invites (id, code, agent, sub, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?)").run(id, i.code, i.agent, i.sub, now, now)
+    this.db.query("INSERT INTO agent_invites (id, code, agent, sub, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)").run(id, i.code, i.agent, i.sub, i.role ?? '', now, now)
     return this.invite(id)!
   }
 

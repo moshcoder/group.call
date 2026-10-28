@@ -9,7 +9,7 @@ import type { AgentInvite, Line, Pass, Recording, Room, RoomEvent, User } from '
 import { pitFooter } from './pit-footer.js'
 import { RING_PLACEHOLDER } from './ring.js'
 import { ringFooter } from './ring-footer.js'
-import { AGENTS, CODE_LENGTH, FREE_ROOMS, formatNumber, INVITE_BONUS_MINUTES, PASS_DAYS, PASS_ROOMS, PASS_USD, telLink } from './service.js'
+import { AGENTS, CODE_LENGTH, FREE_ROOMS, formatNumber, hostLabel, INVITE_BONUS_MINUTES, PASS_DAYS, PASS_ROOMS, PASS_USD, telLink } from './service.js'
 
 export const SITE = 'https://group.call.pit.world'
 export const REPO = 'https://github.com/moshcoder/group.call'
@@ -201,6 +201,11 @@ ${
   <div class="agents">${Object.entries(AGENTS)
     .map(([name, a]) => `<form method="post" action="/r/${esc(r.code)}/invite">${csrfField(ctx)}<input type="hidden" name="agent" value="${esc(name)}"><button class="secondary">Invite ${esc(name)}</button><span class="muted small">${esc(a.about)}</span></form>`)
     .join('')}</div>
+  <h3>Greeter</h3>
+  <p class="muted small">${r.greeter ? `${esc(r.greeter)} waits with anyone who dials in before ${esc(hostLabel(r))}, talks with them, and leaves when the host joins.` : 'An agent that dials in when somebody arrives before the host, keeps them company, and leaves when the host joins.'}</p>
+  <form method="post" action="/r/${esc(r.code)}/greeter" class="row">${csrfField(ctx)}<select name="greeter" aria-label="Greeter"><option value="off">No greeter</option>${Object.keys(AGENTS)
+    .map((name) => `<option value="${esc(name)}"${r.greeter === name ? ' selected' : ''}>${esc(name)}</option>`)
+    .join('')}</select><input name="host" maxlength="40" value="${esc(r.host ?? '')}" placeholder="Host: phone or name (blank = next person)" aria-label="Host phone or name"><button class="secondary">Save</button></form>
   ${data.invites.length ? `<ul class="muted small">${data.invites.slice(0, 5).map((i) => `<li>${esc(i.agent)}: ${esc(i.status)}${i.note ? ` (${esc(i.note)})` : ''}, ${esc(when(i.createdAt).slice(11, 16))}</li>`).join('')}</ul>` : ''}
 </section>`
     : ''
@@ -376,6 +381,7 @@ export function helpPage(ctx: Ctx): string {
 <section id="agents">
   <h2>Agents</h2>
   <p>An agent joins the way a person does: it places a phone call to ${esc(number)}, keys the code with touch tones, then listens (speech to text) and talks (text to speech) on that call. Our agents (riotcoder and cha0spunk) do this with ElevenLabs voices. Room owners on this instance can invite them from the room page.</p>
+  <p>A room can also have a <b>greeter</b>: when somebody dials in before the host, riotcoder or cha0spunk joins, says hello, and keeps them company until the host arrives, then hands over and leaves. Set it on the room page (host = a phone number or a name on the line; blank means whoever joins next), with <code>groupcall greeter 4821 riotcoder 408-555-0101</code>, or MCP <code>set_greeter</code>.</p>
   <p>Your own agent can do the same from any telephony API (Telnyx, Twilio, ...). To have the room announce it by name, tell us the number it will call from, just before it dials:</p>
   <pre><code>curl -X POST ${SITE}/api/v1/rooms/4821/expect \\
   -H "authorization: Bearer $GROUPCALL_KEY" -H 'content-type: application/json' \\

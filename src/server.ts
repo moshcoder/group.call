@@ -19,7 +19,7 @@ import { startPitFooterRefresh } from './pit-footer.js'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh } from './ring.js'
 import { ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
 import { loadRoutes } from './routing.js'
-import { AGENTS, CODE_LENGTH, formatNumber, GroupCallService, newApiKey, telLink, UserError, type Config, type LiveEvent } from './service.js'
+import { AGENTS, CODE_LENGTH, formatNumber, GroupCallService, hostLabel, newApiKey, telLink, UserError, type Config, type LiveEvent } from './service.js'
 import { VERSION } from './version.js'
 
 export { VERSION }
@@ -309,7 +309,7 @@ export function createApp(deps: Deps) {
     return rec && rec.code === codeParam(c) ? mp3(rec) : c.json({ error: 'not found' }, 404)
   })
 
-  app.post('/r/:code/:action{(say|invite|call|rename|delete|record)}', async (c) => {
+  app.post('/r/:code/:action{(say|invite|call|rename|delete|record|greeter)}', async (c) => {
     const user = need(c, `r/${codeParam(c)}`)
     if (user instanceof Response) return user
     const code = codeParam(c)
@@ -332,6 +332,10 @@ export function createApp(deps: Deps) {
       if (action === 'call') {
         const r = await svc.callPhone(user, code, form.phone ?? '', form.name ?? '')
         return roomView(c, user, room, { flash: `Ringing ${r.to}. Pick up and press 1 to join.` })
+      }
+      if (action === 'greeter') {
+        const g = svc.setGreeter(user, code, form.greeter ?? '', form.host ?? '')
+        return roomView(c, user, store.room(code)!, { flash: g.greeter ? `${g.greeter} will greet anyone who arrives before ${hostLabel(store.room(code)!)}.` : 'No greeter.' })
       }
       if (action === 'record') {
         const r = await svc.setRecord(user, code, form.on === '1')
@@ -468,6 +472,8 @@ export function createApp(deps: Deps) {
     last_used_at: r.lastUsedAt ? new Date(r.lastUsedAt).toISOString() : null,
     page: `${ORIGIN}/r/${r.code}`,
     record: r.record,
+    greeter: r.greeter,
+    host: r.greeter ? hostLabel(r) : null,
     recording: svc.line?.recording(r.code) ?? false,
     ...(full ? { quality: store.quality(r.code, 10).map((q) => ({ who: q.who, mos_in: q.mosIn, mos_out: q.mosOut, jitter_ms: q.jitterMs, loss_pct: q.lossPct, at: new Date(q.at).toISOString() })), live: svc.live(r.code), activity: svc.events(r.code).slice(0, 20).map((e) => ({ kind: e.kind, who: e.who, text: e.text || undefined, at: new Date(e.at).toISOString() })) } : {}),
   })
@@ -566,6 +572,13 @@ export function createApp(deps: Deps) {
         return c.json(await svc.callSip(u, param(c, 'code'), String(b.sip), String(b.name ?? ''), headers), 202)
       }
       return c.json(await svc.callPhone(u, param(c, 'code'), String(b.phone ?? b.to ?? ''), b.name ? String(b.name) : ''), 202)
+    }),
+  )
+  app.post(
+    '/api/v1/rooms/:code/greeter',
+    api(async (c, u) => {
+      const b = await body(c)
+      return c.json(svc.setGreeter(u, param(c, 'code'), b.agent === null || b.agent === false ? null : String(b.agent ?? ''), b.host ? String(b.host) : ''))
     }),
   )
   app.post(

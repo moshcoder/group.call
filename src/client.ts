@@ -15,6 +15,8 @@ export type ApiRoom = {
   last_used_at: string | null
   page: string
   record?: boolean
+  greeter?: string | null
+  host?: string | null
   recording?: boolean
   live?: ApiPerson[]
   activity?: ApiActivity[]
@@ -104,6 +106,10 @@ export class GroupCallClient {
   /** Dial a voice agent in over SIP: joins on answer, named, X- headers on the INVITE (operators). */
   callSip(code: string, sip: string, name: string, headers: Record<string, string> = {}): Promise<{ ringing: boolean; to: string }> {
     return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/call`, { sip, name, headers })
+  }
+  /** Have an agent greet early callers until the host (a phone or a name; blank = next person) arrives. `null` turns it off. */
+  greeter(code: string, agent: string | null, host = ''): Promise<{ greeter: string | null; host: string | null }> {
+    return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/greeter`, { agent, host })
   }
   /** Record every call in the room (or stop). */
   record(code: string, on = true): Promise<{ record: boolean; recording: boolean }> {
