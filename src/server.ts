@@ -763,7 +763,8 @@ export function createApp(deps: Deps) {
 
   // The tools our ElevenLabs voice agents call during a call (src/agents.ts).
   const agentTools = toolHandler({ basePath: '/api/agent-tools', secret: config.agentToolSecret ?? '', tools: svc.agentTools(), log: (m) => console.log(m) })
-  app.post('/api/agent-tools/:tool', async (c) => (await agentTools(c.req.raw)) ?? c.json({ error: 'not found' }, 404))
+  // Tools without parameters arrive as GET (ElevenLabs will not POST without a body schema).
+  app.on(['GET', 'POST'], '/api/agent-tools/:tool', async (c) => (await agentTools(c.req.raw)) ?? c.json({ error: 'not found' }, 404))
   /** For an agent on a call: is anybody (a person) still in the room? */
   app.post('/api/v1/agent-queue/rooms/:code/text', async (c) => {
     if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)

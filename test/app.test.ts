@@ -1031,7 +1031,8 @@ describe('our agents as ElevenLabs voice agents', () => {
     await event('call.initiated', { call_control_id: 'leg-me', direction: 'incoming', from: ME })
     await event('call.gather.ended', { call_control_id: 'leg-me', digits: room.code })
     await event('call.transcription', { call_control_id: 'leg-me', transcription_data: { transcript: 'riotcoder, fix the footer on hqterm.sh after this', is_final: true } })
-    const status = await tool(app, 'room_status', room.code)
+    // room_status has no parameters, so ElevenLabs calls it with GET.
+    const status = (await (await app.request(`/api/agent-tools/room_status?room=${room.code}&agent=riotcoder`, { headers: { 'x-voice-agent-secret': 'tool-secret' } })).json()) as any
     expect(status.people).toEqual(['caller ending 00', 'Anthony'])
     expect(status.recent.at(-1)).toBe('Anthony (trusted): riotcoder, fix the footer on hqterm.sh after this')
     const ok = await tool(app, 'take_task', room.code, { brief: 'Fix the footer on hqterm.sh', ack: 'On it.' })
