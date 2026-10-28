@@ -18,7 +18,10 @@ export const HELP = `groupcall ${VERSION}: a party line for people and AI agents
   groupcall expect <code> <name> <from>     name the next caller from that number (your agent)
   groupcall call <code> <phone> [name...]   ring a phone into the room; they press 1 to join (pass or operators)
   groupcall rates <phone>                   what a minute to that number costs, on each route (cheapest is used)
-  groupcall invite <code> <agent>           ask riotcoder or cha0spunk to dial in (operators)
+  groupcall invite <code> <names...>        invite from your contacts by name: groupcall invite 4821 riotcoder, Kim
+  groupcall contacts                        your contacts book: people and agents you invite by name
+  groupcall contact add <name...> [--phone N] [--sip URI] [--agent riotcoder] [--email E] [--alias a,b] [--kind agent] [--trusted]
+  groupcall contact rm <id|name>            remove a contact
   groupcall redeem <credit-code>            add call minutes from a code someone gave you
   groupcall invite-link [note]              a single-use invite link (you both get bonus minutes)
   groupcall sip <code> <sip:uri> <name>     dial a voice agent in over SIP, no press 1 (operators)
@@ -44,6 +47,9 @@ export const HELP = `groupcall ${VERSION}: a party line for people and AI agents
 type Out = { log(text: string): void; error(text: string): void }
 
 export const roomLine = (r: ApiRoom) => `${r.code}  ${r.name.padEnd(28)} ${r.on_the_line ? `${r.on_the_line} on the line` : r.last_used_at ? `last call ${r.last_used_at.slice(0, 10)}` : 'not used yet'}`
+export const contactLine = (c: { id: string; name: string; kind: string; phone: string; sip: string; agent: string; aliases: string[]; trusted: boolean; builtin?: boolean }) =>
+  `${c.name.padEnd(20)} ${c.kind.padEnd(6)} ${c.agent ? 'one of ours' : c.sip || c.phone || ''}${c.aliases.length ? `  (also ${c.aliases.join(', ')})` : ''}${c.trusted ? '  trusted' : ''}${c.builtin ? '' : `  ${c.id}`}`
+const pick = (o: Record<string, string | undefined>) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined))
 export const dialText = (r: ApiRoom) => `Call ${r.dial_in} and key ${r.code}.\nFrom a phone, tap: ${r.tel}`
 
 /** --name value or --name=value. */
@@ -55,7 +61,7 @@ export function flag(argv: string[], name: string): string | undefined {
 
 export async function main(argv = process.argv.slice(2), out: Out = console, client = new GroupCallClient()): Promise<number> {
   const json = argv.includes('--json')
-  const valued = ['--code', '--port', '--as']
+  const valued = ['--code', '--port', '--as', '--phone', '--sip', '--agent', '--email', '--alias', '--kind', '--note']
   const args = argv.filter((a, i) => !a.startsWith('--') && !valued.includes(argv[i - 1] ?? ''))
   const [command, ...rest] = args
   const show = (value: unknown, text: string) => out.log(json ? JSON.stringify(value, null, 2) : text)
@@ -159,9 +165,32 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
         return 0
       }
       case 'invite': {
-        const r = await client.invite(need(rest[0], 'room code'), need(rest[1], 'agent (riotcoder or cha0spunk)'))
-        show(r, `${r.agent} is ${r.status === 'queued' ? 'on the way' : r.status}`)
+        const r = await client.inviteNames(need(rest[0], 'room code'), need(rest.slice(1).join(' ') || undefined, 'who (names from your contacts, e.g. riotcoder, Kim)'))
+        show(r, r.results.map((x) => `${x.status.padEnd(9)} ${x.message}`).join('\n'))
+        return r.results.some((x) => x.status === 'invited' || x.status === 'calling') ? 0 : 1
+      }
+      case 'contacts': {
+        const r = await client.contacts()
+        show(r, r.contacts.length ? r.contacts.map(contactLine).join('\n') : 'no contacts yet: groupcall contact add Kim --phone 408-555-0101')
         return 0
+      }
+      case 'contact': {
+        const [sub, ...words] = rest
+        if (sub === 'add') {
+          const fields = { name: need(words.join(' ') || undefined, 'name'), ...pick({ phone: flag(argv, 'phone'), sip: flag(argv, 'sip'), agent: flag(argv, 'agent'), email: flag(argv, 'email'), kind: flag(argv, 'kind'), note: flag(argv, 'note') }), ...(flag(argv, 'alias') ? { aliases: flag(argv, 'alias')!.split(',') } : {}), ...(argv.includes('--trusted') ? { trusted: true } : {}) }
+          const c = await client.addContact(fields as never)
+          show(c, `added ${contactLine(c)}`)
+          return 0
+        }
+        if (sub === 'rm' || sub === 'remove') {
+          const want = need(words.join(' ') || undefined, 'contact id or name')
+          const c = (await client.contacts()).contacts.find((x) => !x.builtin && (x.id === want || x.name.toLowerCase() === want.toLowerCase()))
+          if (!c) throw new Error(`no contact ${want}`)
+          await client.removeContact(c.id)
+          show({ ok: true, id: c.id }, `removed ${c.name}`)
+          return 0
+        }
+        throw new Error('groupcall contact add <name> [--phone N] [--sip URI] ... | groupcall contact rm <id|name>')
       }
       case 'invite-link': {
         const r = await client.newInvite(rest.join(' ') || undefined)

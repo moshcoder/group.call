@@ -10,6 +10,7 @@
  */
 import { Database } from 'bun:sqlite'
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
+import type { Contact } from './contacts.js'
 
 export type User = { sub: string; name: string; email: string; apiKeyHash: string | null; createdAt: number }
 
@@ -167,6 +168,14 @@ export class Store {
     } catch {}
     // Optional: an account's own smshub.dev link, so its rooms' group texts go out as an smshub group.
     this.db.exec('CREATE TABLE IF NOT EXISTS smshub_links (sub TEXT PRIMARY KEY, key_sealed TEXT NOT NULL, from_number TEXT, relay INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)')
+    // The contacts book: people and agents an account invites by name (contacts.ts).
+    this.db.exec(`CREATE TABLE IF NOT EXISTS contacts (
+      id TEXT PRIMARY KEY, sub TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'person',
+      phone TEXT NOT NULL DEFAULT '', sip TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+      aliases TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', trusted INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    )`)
+    this.db.exec('CREATE INDEX IF NOT EXISTS contacts_sub ON contacts(sub, name)')
     // Group texts: every number a room has texted, and whether it said STOP.
     this.db.exec('CREATE TABLE IF NOT EXISTS sms_numbers (number TEXT PRIMARY KEY, opted_out INTEGER NOT NULL DEFAULT 0, first_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)')
     // Added later: an agent that waits in the room with early callers until the host arrives.
@@ -207,6 +216,7 @@ export class Store {
 
   deleteUser(sub: string): void {
     this.db.query('DELETE FROM users WHERE sub = ?').run(sub)
+    this.db.query('DELETE FROM contacts WHERE sub = ?').run(sub)
   }
 
   newSession(sub: string, now = Date.now()): string {
@@ -278,6 +288,42 @@ export class Store {
     this.db
       .query('INSERT INTO smshub_links (sub, key_sealed, from_number, relay, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(sub) DO UPDATE SET key_sealed = excluded.key_sealed, from_number = excluded.from_number, relay = excluded.relay, updated_at = excluded.updated_at')
       .run(sub, this.sealer.seal(link.key), link.from, link.relay ? 1 : 0, now)
+  }
+
+  // ---- the contacts book ---------------------------------------------------
+
+  private toContact(r: any): Contact | null {
+    return r
+      ? { id: r.id, sub: r.sub, name: r.name, kind: r.kind === 'agent' ? 'agent' : 'person', phone: r.phone, sip: r.sip, agent: r.agent, email: r.email, aliases: r.aliases ? String(r.aliases).split(',').filter(Boolean) : [], note: r.note, trusted: r.trusted === 1, createdAt: r.created_at, updatedAt: r.updated_at }
+      : null
+  }
+
+  contacts(sub: string): Contact[] {
+    return (this.db.query('SELECT * FROM contacts WHERE sub = ? ORDER BY kind, name COLLATE NOCASE').all(sub) as any[]).map((r) => this.toContact(r)!)
+  }
+
+  contact(sub: string, id: string): Contact | null {
+    return this.toContact(this.db.query('SELECT * FROM contacts WHERE sub = ? AND id = ?').get(sub, id))
+  }
+
+  saveContact(c: Omit<Contact, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }, now = Date.now()): Contact {
+    const id = c.id ?? `ct_${randomBytes(9).toString('base64url')}`
+    this.db
+      .query(
+        `INSERT INTO contacts (id, sub, name, kind, phone, sip, agent, email, aliases, note, trusted, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, phone = excluded.phone, sip = excluded.sip, agent = excluded.agent, email = excluded.email, aliases = excluded.aliases, note = excluded.note, trusted = excluded.trusted, updated_at = excluded.updated_at`,
+      )
+      .run(id, c.sub, c.name, c.kind, c.phone, c.sip, c.agent, c.email, c.aliases.join(','), c.note, c.trusted ? 1 : 0, now, now)
+    return this.contact(c.sub, id)!
+  }
+
+  removeContact(sub: string, id: string): boolean {
+    return this.db.query('DELETE FROM contacts WHERE sub = ? AND id = ?').run(sub, id).changes > 0
+  }
+
+  /** Whether a number is a trusted person in the account's book. */
+  trustedContact(sub: string, phone: string): Contact | null {
+    return this.toContact(this.db.query("SELECT * FROM contacts WHERE sub = ? AND phone = ? AND kind = 'person' AND trusted = 1").get(sub, phone))
   }
 
   /** Whether a number said STOP to our texts. */

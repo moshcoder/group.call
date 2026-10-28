@@ -61,6 +61,30 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
     { phone: z.string().min(8).describe('e.g. +14085550101 or +442079460000') },
     wrap(({ phone }) => client.rates(phone)),
   )
+  server.tool(
+    'invite',
+    'Invite people and agents into a room by name, from your contacts book: e.g. names "riotcoder, cha0spunk, Kim". Our agents are queued to dial in, SIP agents are dialled direct, phone agents join on answer, people are rung and press 1. Says per name what happened (unknown names are not in the book). People on the call can say "invite Kim" too.',
+    { code, names: z.union([z.string(), z.array(z.string())]).describe('Names from your contacts') },
+    wrap(({ code, names }) => client.inviteNames(code, names)),
+  )
+  server.tool('list_contacts', 'Your contacts book: people and agents you can invite by name (operators also see our own agents, builtin).', {}, wrap(() => client.contacts()))
+  server.tool(
+    'add_contact',
+    'Add someone to your contacts book. A person needs a phone. An agent needs one of ours (agent: riotcoder|cha0spunk), a SIP address (sip:...@sip.rtc.elevenlabs.io) or a phone number (it joins on answer). aliases help speech recognition ("chaos punk"); trusted lets a person ask for invites by voice from their phone.',
+    {
+      name: z.string().min(1).max(40),
+      kind: z.enum(['person', 'agent']).optional(),
+      phone: z.string().optional(),
+      sip: z.string().regex(/^sips?:/).optional(),
+      agent: z.enum(['riotcoder', 'cha0spunk']).optional(),
+      email: z.string().optional(),
+      aliases: z.array(z.string().max(40)).max(8).optional(),
+      note: z.string().max(200).optional(),
+      trusted: z.boolean().optional(),
+    },
+    wrap((c) => client.addContact(c)),
+  )
+  server.tool('remove_contact', 'Remove a contact by its id (from list_contacts).', { id: z.string() }, wrap(({ id }) => client.removeContact(id)))
   server.tool('invite_agent', "Ask one of the instance's own agents (riotcoder or cha0spunk) to dial in to a room. Operators only.", { code, agent: z.enum(['riotcoder', 'cha0spunk']) }, wrap(({ code, agent }) => client.invite(code, agent)))
   server.tool('create_invite', 'Make a single-use invite link to group.call (each person has a few). Whoever signs in through it and you both get bonus minutes.', { note: z.string().max(80).optional() }, wrap(({ note }) => client.newInvite(note)))
   server.tool('redeem_code', 'Redeem a credit code (extra call minutes, one-off or every month).', { code: z.string().min(6) }, wrap(({ code }) => client.redeem(code)))

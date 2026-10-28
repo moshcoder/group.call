@@ -939,3 +939,57 @@ describe('group texts through smshub.dev (optional)', () => {
     expect(((await (await call('gc_op', 'DELETE', '/api/v1/me/smshub')).json()) as any).linked).toBe(false)
   })
 })
+
+describe('the contacts book and inviting by name', () => {
+  const ME = '+14086562473'
+
+  test('a known caller says "invite riot coder, chaos punk and Kim": both agents are queued, Kim is rung, the room hears it', async () => {
+    const { call, event, telnyx, store } = setup({ knownCallers: { [ME]: 'Anthony' } })
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Standup' })).json()) as any
+    const kim = await call('gc_op', 'POST', '/api/v1/contacts', { name: 'Kim Lee', phone: '408-555-0123', aliases: ['kimmy'] })
+    expect(kim.status).toBe(201)
+    const book = ((await (await call('gc_op', 'GET', '/api/v1/contacts')).json()) as any).contacts
+    expect(book.map((c: any) => `${c.name}:${c.kind}:${c.builtin ?? false}`)).toEqual(['riotcoder:agent:true', 'cha0spunk:agent:true', 'Kim Lee:person:false'])
+
+    await event('call.initiated', { call_control_id: 'leg-me', direction: 'incoming', from: ME })
+    await event('call.gather.ended', { call_control_id: 'leg-me', digits: room.code })
+    await event('call.transcription', { call_control_id: 'leg-me', transcription_data: { transcript: 'Invite riot coder, chaos punk and Kim.', is_final: true } })
+    await new Promise((r) => setTimeout(r, 20))
+
+    expect(['riotcoder', 'cha0spunk'].map((a) => store.openInvite(room.code, a)?.status)).toEqual(['queued', 'queued'])
+    expect(telnyx.calls.find((c) => c.path === '/calls')?.body).toMatchObject({ to: '+14085550123', from: DIAL_IN })
+    const said = telnyx.calls.filter((c) => c.path.endsWith('/actions/speak')).map((c) => c.body.payload).join(' | ')
+    expect(said).toContain('riotcoder is dialling in. cha0spunk is dialling in. Calling Kim Lee. They join when they pick up and press 1.')
+  })
+
+  test('the same words from a caller nobody trusts invite no one; a trusted contact may', async () => {
+    const { call, event, telnyx, store } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Open' })).json()) as any
+    await event('call.initiated', { call_control_id: 'leg-x', direction: 'incoming', from: '+15559990000' })
+    await event('call.gather.ended', { call_control_id: 'leg-x', digits: room.code })
+    await event('call.transcription', { call_control_id: 'leg-x', transcription_data: { transcript: 'invite riotcoder', is_final: true } })
+    expect(store.openInvite(room.code, 'riotcoder')).toBeNull()
+
+    await call('gc_op', 'POST', '/api/v1/contacts', { name: 'Pat', phone: '+15559990000', trusted: true })
+    await event('call.transcription', { call_control_id: 'leg-x', transcription_data: { transcript: 'okay, invite riotcoder and Zed', is_final: true } })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(store.openInvite(room.code, 'riotcoder')?.status).toBe('queued')
+    expect(telnyx.calls.some((c) => String(c.body.payload ?? '').includes('Zed is not in the contacts.'))).toBe(true)
+  })
+
+  test('the API invites by name and says per name what happened; a free account cannot ring people or see our agents', async () => {
+    const { call } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'API' })).json()) as any
+    await call('gc_op', 'POST', '/api/v1/contacts', { name: 'Eleven', sip: 'sip:agent_1@sip.rtc.elevenlabs.io' })
+    const r = (await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/invite`, { names: 'riotcoder, eleven, nobody' })).json()) as any
+    expect(r.results.map((x: any) => `${x.name}:${x.status}:${x.how ?? ''}`)).toEqual(['riotcoder:invited:agent', 'Eleven:calling:sip', 'nobody:unknown:'])
+
+    const mine = (await (await call('gc_guest', 'POST', '/api/v1/rooms', { name: 'Mine' })).json()) as any
+    expect(((await (await call('gc_guest', 'GET', '/api/v1/contacts')).json()) as any).contacts).toEqual([])
+    expect((await call('gc_guest', 'POST', '/api/v1/contacts', { name: 'Nophone' })).status).toBe(400)
+    await call('gc_guest', 'POST', '/api/v1/contacts', { name: 'Mom', phone: '408-555-0199' })
+    const g = (await (await call('gc_guest', 'POST', `/api/v1/rooms/${mine.code}/invite`, { names: ['Mom', 'riotcoder'] })).json()) as any
+    expect(g.results.map((x: any) => x.status)).toEqual(['failed', 'unknown'])
+    expect(g.said).toContain('Calling Mom needs a room pass.')
+  })
+})

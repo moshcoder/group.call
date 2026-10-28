@@ -10,6 +10,7 @@ import { pitFooter } from './pit-footer.js'
 import { RING_PLACEHOLDER } from './ring.js'
 import { ringFooter } from './ring-footer.js'
 import type { PublicEndpoint } from '@profullstack/webhooks'
+import type { Contact } from './contacts.js'
 import { AGENTS, CODE_LENGTH, FREE_ROOMS, formatNumber, hostLabel, WEBHOOK_EVENTS, INVITE_BONUS_MINUTES, PASS_DAYS, PASS_ROOMS, PASS_USD, telLink } from './service.js'
 
 export const SITE = 'https://group.call.pit.world'
@@ -196,6 +197,15 @@ ${
     : ''
 }
 ${
+  data.owner && (ctx.callPhones || ctx.agents)
+    ? `<section>
+  <h2>Invite from your contacts</h2>
+  <p class="muted small">Names from <a href="/me#contacts">your contacts</a>, people and agents: each is called the way they are reached. On the call, a trusted caller can just say <b>"invite riotcoder and Kim"</b>.</p>
+  <form method="post" action="/r/${esc(r.code)}/invite" class="row">${csrfField(ctx)}<input name="names" maxlength="300" required placeholder="riotcoder, cha0spunk, Kim" aria-label="Who to invite"><button>Invite</button></form>
+</section>`
+    : ''
+}
+${
   data.owner && ctx.callPhones
     ? `<section>
   <h2>Call someone in</h2>
@@ -276,7 +286,7 @@ ${ownerTools}`,
   })
 }
 
-export function mePage(ctx: Ctx, data: { apiKey?: string; flash?: string; minutes?: { used: number; free: number; credits: number; left: number; unlimited: boolean }; webhooks?: PublicEndpoint[]; webhookSecret?: string; smshub?: { linked: boolean; from: string | null; relay: boolean } }): string {
+export function mePage(ctx: Ctx, data: { apiKey?: string; flash?: string; minutes?: { used: number; free: number; credits: number; left: number; unlimited: boolean }; webhooks?: PublicEndpoint[]; webhookSecret?: string; smshub?: { linked: boolean; from: string | null; relay: boolean }; contacts?: (Contact & { builtin?: boolean })[] }): string {
   const m = data.minutes
   const u = ctx.user!
   return layout({
@@ -302,6 +312,26 @@ ${flashNote(data.flash)}
 bunx @profullstack/groupcall rooms
 claude mcp add groupcall -e GROUPCALL_KEY=gc_… -- bunx @profullstack/groupcall mcp</code></pre>
 </section>
+${
+  data.contacts
+    ? `<section id="contacts">
+  <h2>Contacts</h2>
+  <p class="muted small">People and agents you invite by name: say <b>"invite riotcoder and Kim"</b> on a call, type names on a room page, or <code>groupcall invite 4821 riotcoder kim</code>. A person is rung and presses 1. An agent is one of ours, a SIP voice agent (like an ElevenLabs agent), or an agent on a phone number, which joins on answer. Aliases help the speech recognizer ("chaos punk"). A trusted person may ask for invites by voice from their phone.</p>
+  ${
+    data.contacts.length
+      ? `<ul class="contacts">${data.contacts
+          .map(
+            (c) => `<li><strong>${esc(c.name)}</strong> <span class="muted small">${c.kind}${c.agent ? `, one of ours` : ''}${c.sip ? `, <code>${esc(c.sip)}</code>` : ''}${c.phone ? `, ${esc(formatNumber(c.phone))}` : ''}${c.email ? `, ${esc(c.email)}` : ''}${c.aliases.length ? `, also "${esc(c.aliases.join('", "'))}"` : ''}${c.trusted ? ', trusted' : ''}</span>${
+              c.builtin ? '' : ` <form method="post" action="/me/contacts/delete" class="inline">${csrfField(ctx)}<input type="hidden" name="id" value="${esc(c.id)}"><button class="secondary small">Remove</button></form>`
+            }</li>`,
+          )
+          .join('')}</ul>`
+      : '<p class="muted">No contacts yet.</p>'
+  }
+  <form method="post" action="/me/contacts/add" class="row">${csrfField(ctx)}<input name="name" maxlength="40" required placeholder="Name" aria-label="Name"><select name="kind" aria-label="Person or agent"><option value="person">Person</option><option value="agent">Agent</option></select><input name="phone" type="tel" placeholder="Phone" aria-label="Phone"><input name="sip" placeholder="SIP (agents): sip:...@sip.rtc.elevenlabs.io" aria-label="SIP address"><input name="email" type="email" placeholder="Email (optional)" aria-label="Email"><input name="aliases" maxlength="200" placeholder="Also called (comma separated)" aria-label="Aliases"><label class="small"><input type="checkbox" name="trusted" value="1"> trusted</label><button>Add contact</button></form>
+</section>`
+    : ''
+}
 <section id="smshub">
   <h2>Group texts through smshub.dev (optional)</h2>
   <p class="muted small">Links shared on your calls are texted to everyone on the line. Without this they go from the room number. Link your <a href="https://smshub.dev">smshub.dev</a> account and they go as an smshub group (one per room) from your own number, into your smshub inbox; with relay on, replies keep going to the whole group after the call. If smshub cannot send, the room number is used.</p>
@@ -413,6 +443,7 @@ export function helpPage(ctx: Ctx): string {
 <section id="agents">
   <h2>Agents</h2>
   <p>An agent joins the way a person does: it places a phone call to ${esc(number)}, keys the code with touch tones, then listens (speech to text) and talks (text to speech) on that call. Our agents (riotcoder and cha0spunk) do this with ElevenLabs voices. Room owners on this instance can invite them from the room page.</p>
+  <p><b>Invite by name.</b> Keep <a href="/me#contacts">a contacts book</a> of people (a phone number) and agents (one of ours, a SIP voice agent like an ElevenLabs agent, or an agent on a phone number). On the call, just say <b>"invite riotcoder, cha0spunk and Kim"</b>: agents dial in, people are rung and press 1, and the room hears what happened. That works for the room's known callers and for people you marked trusted; anyone else saying it changes nothing. Also <code>groupcall invite 4821 riotcoder, Kim</code>, MCP <code>invite</code>, or <code>POST /api/v1/rooms/4821/invite {"names": "riotcoder, Kim"}</code>.</p>
   <p><b>Group texts.</b> Share a link on a call (a readm3.com report, a PDF, anything) and everyone on the line gets it by text from ${esc(number)}: text it to ${esc(number)} while you are on the call, use <b>Text everyone</b> on the room page, <code>groupcall text 4821 https://readm3.com/...</code>, MCP <code>text_room</code>, or ask riotcoder on the call. Reply STOP to stop getting them. Optional: link your <a href="https://smshub.dev">smshub.dev</a> account on <a href="/me#smshub">your account page</a> (or <code>groupcall smshub &lt;key&gt;</code>) and your rooms' texts go out as smshub groups from your own number; if smshub cannot send, the room number is used.</p>
   <p><b>Webhooks.</b> Add a URL on <a href="/me#webhooks">your account</a> (or <code>groupcall webhook add</code>, MCP <code>create_webhook</code>, <code>POST /api/v1/webhooks</code>) and group.call POSTs <code>room.joined</code>, <code>room.left</code>, <code>transcript.line</code>, <code>text.sent</code>, <code>phone.called</code> and <code>recording.ready</code> to it as signed CloudEvents (Standard Webhooks, via <code>@profullstack/webhooks</code>).</p>
   <p>A room can also have a <b>greeter</b>: when somebody dials in before the host, riotcoder or cha0spunk joins, says hello, and keeps them company until the host arrives, then hands over and leaves. Set it on the room page (host = a phone number or a name on the line; blank means whoever joins next), with <code>groupcall greeter 4821 riotcoder 408-555-0101</code>, or MCP <code>set_greeter</code>.</p>
@@ -448,7 +479,8 @@ bunx @profullstack/groupcall new "Standup"
 bunx @profullstack/groupcall who 4821
 bunx @profullstack/groupcall say 4821 "starting now"
 bunx @profullstack/groupcall call 4821 408-555-0101 Anthony
-bunx @profullstack/groupcall invite 4821 riotcoder
+bunx @profullstack/groupcall contact add Kim --phone 408-555-0101
+bunx @profullstack/groupcall invite 4821 riotcoder, Kim
 claude mcp add groupcall -e GROUPCALL_KEY=gc_… -- bunx @profullstack/groupcall mcp</code></pre>
   <p>Or <code>curl -fsSL ${SITE}/install.sh | sh</code>. The desktop app (Mac, Windows, Linux) comes with the CLI inside: <a href="${REPO}/releases">releases</a>. On a phone, add this site to your home screen.</p>
 </section>

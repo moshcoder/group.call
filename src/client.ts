@@ -163,4 +163,24 @@ export class GroupCallClient {
   invite(code: string, agent: string): Promise<{ id: string; agent: string; status: string }> {
     return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/agents`, { agent })
   }
+  /** Invite people and agents from your contacts by name: "riotcoder, Kim". */
+  inviteNames(code: string, names: string | string[]): Promise<{ results: InviteResult[]; said: string }> {
+    return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/invite`, { names })
+  }
+  /** Your contacts book; operators also see our own agents (builtin). */
+  contacts(): Promise<{ contacts: ApiContact[] }> {
+    return this.call('GET', '/api/v1/contacts')
+  }
+  addContact(contact: Partial<Omit<ApiContact, 'id' | 'builtin'>>): Promise<ApiContact> {
+    return this.call('POST', '/api/v1/contacts', contact)
+  }
+  updateContact(id: string, contact: Partial<Omit<ApiContact, 'id' | 'builtin'>>): Promise<ApiContact> {
+    return this.call('PATCH', `/api/v1/contacts/${encodeURIComponent(id)}`, contact)
+  }
+  removeContact(id: string): Promise<{ ok: true }> {
+    return this.call('DELETE', `/api/v1/contacts/${encodeURIComponent(id)}`)
+  }
 }
+
+export type ApiContact = { id: string; name: string; kind: 'person' | 'agent'; phone: string; sip: string; agent: string; email: string; aliases: string[]; note: string; trusted: boolean; builtin?: boolean }
+export type InviteResult = { name: string; heard: string; status: 'invited' | 'calling' | 'here' | 'unknown' | 'ambiguous' | 'failed'; how?: 'agent' | 'sip' | 'phone'; message: string }

@@ -4,16 +4,17 @@
  *
  * One click (or Enter) opens a room in place; the row under the pointer lights
  * up. On a room, i asks riotcoder in and c asks cha0spunk (operators only), and
- * p takes a phone number to ring into it (Enter rings, Esc gives up).
+ * p takes a phone number to ring into it (Enter rings, Esc gives up), and n takes
+ * names from your contacts to invite ("riotcoder, Kim").
  * Everything re-reads every five seconds; r re-reads now, q quits.
  */
 import { createApp } from '@profullstack/hqtui'
 import { GroupCallClient, type ApiMe, type ApiPerson, type ApiRoom } from './client.js'
 
 export type Row = { kind: 'room'; room: ApiRoom } | { kind: 'person'; room: ApiRoom; person: ApiPerson } | { kind: 'empty'; room: ApiRoom }
-export type TuiState = { me: ApiMe | null; open: Set<string>; detail: Map<string, ApiRoom>; selected: number; hovered: number | null; busy: string | null; note: string | null; dialing: string | null }
+export type TuiState = { me: ApiMe | null; open: Set<string>; detail: Map<string, ApiRoom>; selected: number; hovered: number | null; busy: string | null; note: string | null; dialing: string | null; naming: string | null }
 
-export const initialState = (): TuiState => ({ me: null, open: new Set(), detail: new Map(), selected: 0, hovered: null, busy: null, note: null, dialing: null })
+export const initialState = (): TuiState => ({ me: null, open: new Set(), detail: new Map(), selected: 0, hovered: null, busy: null, note: null, dialing: null, naming: null })
 
 /** The rows in draw order: each room, then who is on it while it is open. */
 export function rows(s: TuiState): Row[] {
@@ -41,7 +42,15 @@ export function pick(s: TuiState, index: number): void {
 }
 
 /** Pure key handling, testable without a terminal. */
-export function onKey(s: TuiState, key: { name: string; key: string; char?: string }): 'quit' | 'refresh' | 'invite-riotcoder' | 'invite-cha0spunk' | 'call-phone' | null {
+export function onKey(s: TuiState, key: { name: string; key: string; char?: string }): 'quit' | 'refresh' | 'invite-riotcoder' | 'invite-cha0spunk' | 'call-phone' | 'invite-names' | null {
+  // Typing names: like keying a number, every key is the names' until Enter or Esc.
+  if (s.naming !== null) {
+    if (key.key === 'ctrl+c' || key.name === 'escape') s.naming = null
+    else if (key.name === 'enter') return s.naming.trim() ? 'invite-names' : ((s.naming = null), null)
+    else if (key.name === 'backspace') s.naming = s.naming.slice(0, -1)
+    else if (key.char && key.char.length === 1 && key.char >= ' ' && s.naming.length < 120) s.naming += key.char
+    return null
+  }
   // Keying a number: every key is the number's until Enter or Esc, so q and c type nothing else.
   if (s.dialing !== null) {
     if (key.key === 'ctrl+c' || key.name === 'escape') s.dialing = null
@@ -59,6 +68,7 @@ export function onKey(s: TuiState, key: { name: string; key: string; char?: stri
   else if (key.char === 'i' && rows(s)[s.selected]) return 'invite-riotcoder'
   else if (key.char === 'c' && rows(s)[s.selected]) return 'invite-cha0spunk'
   else if (key.char === 'p' && rows(s)[s.selected] && s.me?.can_call_phones) s.dialing = ''
+  else if (key.char === 'n' && rows(s)[s.selected] && (s.me?.can_call_phones || s.me?.can_invite_agents)) s.naming = ''
   return null
 }
 
@@ -101,6 +111,11 @@ export async function runTui(client = new GroupCallClient()): Promise<void> {
     if ((action === 'invite-riotcoder' || action === 'invite-cha0spunk') && row) {
       const agent = action === 'invite-riotcoder' ? 'riotcoder' : 'cha0spunk'
       void act(`Asking ${agent}…`, async () => `${(await client.invite(row.room.code, agent)).agent} is on the way.`)
+    }
+    if (action === 'invite-names' && row && s.naming !== null) {
+      const names = s.naming
+      s.naming = null
+      void act(`Inviting ${names}…`, async () => (await client.inviteNames(row.room.code, names)).said)
     }
     if (action === 'call-phone' && row && s.dialing !== null) {
       const phone = s.dialing
@@ -164,6 +179,7 @@ export async function runTui(client = new GroupCallClient()): Promise<void> {
     })
     const row = all[s.selected]
     ui.panel({ title: row ? `${row.room.code}  ${row.room.name}` : 'Details', size: 6 }, (p: any) => {
+      if (s.naming !== null) p.text(`Invite from contacts: ${s.naming}▏  (Enter invites, Esc cancels)`, { fg: theme.accent, bold: true })
       if (s.dialing !== null) p.text(`Phone to call in: ${s.dialing}▏  (Enter rings, Esc cancels)`, { fg: theme.accent, bold: true })
       if (s.note) p.text(s.note, { fg: theme.accent })
       if (row) {
@@ -174,6 +190,7 @@ export async function runTui(client = new GroupCallClient()): Promise<void> {
     })
     const keys = [{ key: '↑↓', label: 'move' }, { key: 'Enter', label: 'open' }, { key: 'r', label: 'refresh' }]
     if (row && me?.can_call_phones) keys.push({ key: 'p', label: 'call a phone in' })
+    if (row && (me?.can_call_phones || me?.can_invite_agents)) keys.push({ key: 'n', label: 'invite by name' })
     if (row && me?.can_invite_agents) keys.push({ key: 'i', label: 'invite riotcoder' }, { key: 'c', label: 'invite cha0spunk' })
     keys.push({ key: 'q', label: 'quit' })
     ui.statusBar({ items: keys, right: [{ label: 'sign in with CoinPay' }] })
