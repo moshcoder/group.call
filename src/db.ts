@@ -19,7 +19,7 @@ export type Room = { code: string; sub: string; name: string; createdAt: number;
 export type Recording = { id: string; code: string; conferenceId: string; recordingId: string | null; status: 'recording' | 'saving' | 'ready' | 'failed'; path: string; bytes: number; durationSecs: number | null; startedAt: number; endedAt: number | null; note: string }
 
 /** What happened in a room: somebody joined or left, or a line was said into it. */
-export type RoomEvent = { id: number; code: string; kind: 'join' | 'leave' | 'say' | 'invite' | 'quality'; who: string; text: string; at: number }
+export type RoomEvent = { id: number; code: string; kind: 'join' | 'leave' | 'say' | 'invite' | 'quality' | 'text'; who: string; text: string; at: number }
 
 /** How a leg sounded, from Telnyx's call_quality_stats on hangup. */
 export type LegQuality = { code: string; leg: string; who: string; mosIn: number | null; mosOut: number | null; jitterMs: number | null; lossPct: number | null; at: number }
@@ -165,6 +165,8 @@ export class Store {
     try {
       this.db.exec('ALTER TABLE rooms ADD COLUMN record INTEGER NOT NULL DEFAULT 0')
     } catch {}
+    // Group texts: every number a room has texted, and whether it said STOP.
+    this.db.exec('CREATE TABLE IF NOT EXISTS sms_numbers (number TEXT PRIMARY KEY, opted_out INTEGER NOT NULL DEFAULT 0, first_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)')
     // Added later: an agent that waits in the room with early callers until the host arrives.
     for (const sql of ['ALTER TABLE rooms ADD COLUMN greeter TEXT', 'ALTER TABLE rooms ADD COLUMN host TEXT', "ALTER TABLE agent_invites ADD COLUMN role TEXT NOT NULL DEFAULT ''"]) {
       try {
@@ -258,6 +260,20 @@ export class Store {
 
   renameRoom(code: string, name: string): void {
     this.db.query('UPDATE rooms SET name = ? WHERE code = ?').run(name, code)
+  }
+
+  /** Whether a number said STOP to our texts. */
+  smsOptedOut(number: string): boolean {
+    return (this.db.query('SELECT opted_out FROM sms_numbers WHERE number = ?').get(number) as { opted_out: number } | null)?.opted_out === 1
+  }
+
+  /** Record a first text to a number; true when it is the first, so it carries the opt-out notice. */
+  smsFirst(number: string, now = Date.now()): boolean {
+    return this.db.query('INSERT OR IGNORE INTO sms_numbers (number, first_at, updated_at) VALUES (?, ?, ?)').run(number, now, now).changes > 0
+  }
+
+  setSmsOptOut(number: string, out: boolean, now = Date.now()): void {
+    this.db.query('INSERT INTO sms_numbers (number, opted_out, first_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(number) DO UPDATE SET opted_out = excluded.opted_out, updated_at = excluded.updated_at').run(number, out ? 1 : 0, now, now)
   }
 
   setGreeter(code: string, greeter: string | null, host: string | null): void {

@@ -14,6 +14,7 @@ import { mkdirSync, unlinkSync } from 'node:fs'
 import { GroupCall, newRoomCode, normalNumber, type Participant, type Recording as SavedRecording, type TelnyxEvent } from '@profullstack/group-call'
 import { defaultDeck, learnedPrefix, Router, type Route, type RouteChoice } from './routing.js'
 import type { AgentInvite, Line, Pass, Recording, Room, RoomEvent, Store, User } from './db.js'
+import { Webhooks, sqliteStore as webhookStore, type GuardOptions } from '@profullstack/webhooks'
 
 export class UserError extends Error {
   constructor(
@@ -82,6 +83,10 @@ export type Config = {
   recordingsDir?: string
   /** SIP hosts an operator may dial a voice agent in from (ElevenLabs by default). */
   sipHosts?: string[]
+  /** Telnyx messaging profile 510-616-W3BS texts from; inbound texts come back on its webhook. */
+  messagingProfileId?: string
+  /** Checks on customer webhook URLs; tests allow private addresses. */
+  webhookGuard?: GuardOptions
   origin?: string
   fetch?: typeof fetch
 }
@@ -91,6 +96,14 @@ export const AGENTS: Record<string, { about: string; voice: string }> = {
   riotcoder: { about: 'Builds and ships things for Anthony. Voice: Chris.', voice: 'ElevenLabs Chris' },
   cha0spunk: { about: 'Works the inbound queue: email, support, follow-ups. Voice: Jessica.', voice: 'ElevenLabs Jessica' },
 }
+
+/** What group.call tells customer webhooks about. */
+export const WEBHOOK_EVENTS = ['room.joined', 'room.left', 'transcript.line', 'text.sent', 'phone.called', 'recording.ready']
+
+/** Group texts a room may send in an hour, so a room cannot be turned into a spam cannon. */
+export const TEXTS_PER_HOUR = 30
+/** Longest group text, in characters (about four SMS segments). */
+export const MAX_TEXT = 600
 
 export const FREE_ROOMS = 3
 /** Invite links each person can hand out. Scarce on purpose: an invite should mean something. */
@@ -151,6 +164,10 @@ export class GroupCallService {
   private readonly store: Store
   readonly config: Config
   private readonly agentNumbers: Record<string, string>
+  /** Customer webhooks (@profullstack/webhooks): endpoints per account, durable delivery. */
+  readonly hooks: Webhooks
+  /** When each room sent its recent group texts. */
+  private readonly texted = new Map<string, number[]>()
   /** Phones a room rang, by number, with the name the owner gave them. */
   private readonly calledIn = new Map<string, string>()
   /** When each room last rang phones from the keypad, for its hourly cap. */
@@ -165,6 +182,14 @@ export class GroupCallService {
     this.agentNumbers = config.agentCallerIds ?? {}
     this.credits = new Credits(sqliteStore(store.db as never))
     this.affiliates = new Affiliates(affiliateStore(store.db as never), { defaultQuota: INVITES_PER_PERSON })
+    this.hooks = new Webhooks({
+      store: webhookStore(store.db as never),
+      source: config.origin ?? 'https://group.call.pit.world',
+      eventTypes: WEBHOOK_EVENTS,
+      ...(config.fetch ? { fetchImpl: config.fetch } : {}),
+      ...(config.webhookGuard ? { guard: config.webhookGuard } : {}),
+      log: (m) => console.log(m),
+    })
     this.line =
       config.telnyxApiKey && config.telnyxPublicKey
         ? new GroupCall({
@@ -354,6 +379,7 @@ export class GroupCallService {
             const bytes = await Bun.write(path, await res.arrayBuffer())
             this.store.updateRecording(rec.id, { status: 'ready', path, bytes })
             this.store.addEvent({ code, kind: 'say', who: 'group.call', text: `recording saved (${Math.round(bytes / 1024)} KB)` })
+            this.hook(code, 'recording.ready', { recording_id: rec.id, bytes, duration_secs: this.store.recording(rec.id)?.durationSecs ?? null, mp3: `${this.config.origin ?? 'https://group.call.pit.world'}/api/v1/recordings/${rec.id}.mp3` })
             return this.store.recording(rec.id)
           }
         } catch {}
@@ -391,6 +417,14 @@ export class GroupCallService {
     const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
     this.store.addEvent({ code, kind, who: shown.name, text: '' })
     this.emit({ type: kind, code, who: shown.name, callers, at: Date.now() })
+    this.hook(code, kind === 'join' ? 'room.joined' : 'room.left', { who: shown.name, kind: shown.kind, callers })
+  }
+
+  /** Tell the room owner's webhooks; never in the way of the call. */
+  private hook(code: string, type: string, data: Record<string, unknown>): void {
+    const room = this.store.room(code)
+    if (!room) return
+    void this.hooks.emit(room.sub, type, { code, room: room.name, ...data }, { subject: `room:${code}` }).catch((e) => console.error('group.call: webhook:', e))
   }
 
   /** Whether a person's line mostly repeats what an agent said in the last 15 seconds. */
@@ -469,6 +503,7 @@ export class GroupCallService {
     if (this.store.transcript(code, { limit: 4 }).some((l) => l.who === who && l.at >= since && norm(l.text) === norm(text))) return null
     const line = this.store.addLine({ code, who, kind, text })
     this.emit({ type: 'line', code, who, text, callers: this.line?.callersIn(code) ?? 0, at: line.at, line })
+    this.hook(code, 'transcript.line', { who, kind, text })
     return line
   }
 
@@ -742,6 +777,7 @@ export class GroupCallService {
     const shown = clean || `phone ending ${to.slice(-2)}`
     const text = askedBy ? `is being called in by ${askedBy}` : 'is being called in'
     this.store.addEvent({ code: room.code, kind: 'invite', who: shown, text })
+    this.hook(room.code, 'phone.called', { who: shown, asked_by: askedBy || null })
     this.emit({ type: 'invite', code: room.code, who: shown, text, callers: this.line?.callersIn(room.code) ?? 0, at: Date.now() })
     return { ringing: true, to: formatNumber(to), via: placed.provider, rate: placed.rate }
   }
@@ -759,6 +795,114 @@ export class GroupCallService {
     const choices = this.router.choices(to, this.store.learnedRates())
     if (!choices.length) throw new UserError(usOnly ? ask : 'group.call will not call that number: it is blocked, or dearer a minute than this instance pays.', 'phone')
     return { to, choices }
+  }
+
+  // ---- group texts ----------------------------------------------------------
+
+  /**
+   * Text everyone on the line in a room: a link to a readm3.com report, a PDF, anything.
+   * It goes from the room's own number to every person on the call with a US or Canadian
+   * number, except whoever sent it, agents, and numbers that said STOP. The room hears that
+   * it happened, the transcript keeps it, and the owner's webhooks get `text.sent`.
+   */
+  async textRoom(code: string, text: string, by: { name: string; from?: string }): Promise<{ sent: number; failed: number; skipped: number; error?: string }> {
+    const room = this.store.room(code)
+    if (!room) throw new UserError('No such room.', 'code', 404)
+    const clean = text.replace(/\s+/g, ' ').trim()
+    if (!clean) throw new UserError('Say what to text.', 'text')
+    if (clean.length > MAX_TEXT) throw new UserError(`A group text is at most ${MAX_TEXT} characters.`, 'text')
+    if (!this.line) throw new UserError('Texting is not set up on this instance.', 'text', 503)
+    const now = Date.now()
+    const recent = (this.texted.get(room.code) ?? []).filter((t) => now - t < 60 * 60_000)
+    if (recent.length >= TEXTS_PER_HOUR) throw new UserError(`This room has sent ${TEXTS_PER_HOUR} texts this hour. Try again later.`, 'text', 429)
+    recent.push(now)
+    this.texted.set(room.code, recent)
+
+    const own = new Set([normalNumber(this.config.dialIn), ...Object.values(this.agentNumbers).map((n) => normalNumber(n)), by.from ? normalNumber(by.from) : ''])
+    const numbers = new Set<string>()
+    let skipped = 0
+    for (const p of this.line.participants(room.code)) {
+      const n = p.from ? normalNumber(p.from) : ''
+      if (own.has(n) || numbers.has(n)) continue
+      if (!/^\+1[2-9]\d{2}[2-9]\d{6}$/.test(n) || this.store.smsOptedOut(n)) {
+        skipped += 1
+        continue
+      }
+      numbers.add(n)
+    }
+    const body = `${by.name} in ${room.name}: ${clean}`
+    let sent = 0
+    let failed = 0
+    let error: string | undefined
+    for (const to of numbers) {
+      const first = this.store.smsFirst(to)
+      const r = await this.sendSms(to, first ? `${body}\n\ngroup.call texts links shared on your call. Reply STOP to stop.` : body)
+      if (r.ok) sent += 1
+      else {
+        failed += 1
+        error ??= r.error
+      }
+    }
+    const shown = by.name || 'someone'
+    this.store.addEvent({ code: room.code, kind: 'text', who: shown, text: clean })
+    this.addLine(room.code, shown, 'typed', `(texted everyone) ${clean}`)
+    if (sent > 0) void this.line.say(room.code, `${shown} texted everyone on the call${/https?:\/\//.test(clean) ? ' a link' : ''}.`).catch(() => {})
+    this.hook(room.code, 'text.sent', { who: shown, text: clean, sent, failed, skipped })
+    return { sent, failed, skipped, ...(error ? { error } : {}) }
+  }
+
+  /** One text from the room's number, with Telnyx's reason when it will not go. */
+  private async sendSms(to: string, text: string): Promise<{ ok: boolean; error?: string }> {
+    const doFetch = this.config.fetch ?? fetch
+    try {
+      const res = await doFetch('https://api.telnyx.com/v2/messages', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.config.telnyxApiKey}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ from: normalNumber(this.config.dialIn), to, text, ...(this.config.messagingProfileId ? { messaging_profile_id: this.config.messagingProfileId } : {}) }),
+      })
+      if (res.ok) return { ok: true }
+      const j = (await res.json().catch(() => ({}))) as { errors?: { code?: string; detail?: string; title?: string }[] }
+      const e = j.errors?.[0]
+      // 40010: the number has no 10DLC campaign, so US carriers will not take its texts.
+      if (e?.code === '40010') return { ok: false, error: 'texting from the room number is waiting on carrier registration (10DLC)' }
+      return { ok: false, error: e?.detail ?? e?.title ?? `Telnyx ${res.status}` }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  }
+
+  /**
+   * A text to the room's number (Telnyx `message.received`). STOP and START are honoured;
+   * anything else from somebody on a call is passed on to everyone else on that call.
+   */
+  async inboundSms(rawBody: string, signature: string | undefined, timestamp: string | undefined): Promise<boolean> {
+    if (!this.line || !this.line.verify(rawBody, signature, timestamp)) return false
+    let event: { event_type?: string; payload?: Record<string, any> }
+    try {
+      event = (JSON.parse(rawBody) as { data?: typeof event }).data ?? {}
+    } catch {
+      return false
+    }
+    if (event.event_type !== 'message.received') return true
+    const from = normalNumber(String(event.payload?.from?.phone_number ?? ''))
+    const text = String(event.payload?.text ?? '').trim()
+    if (!from || !text) return true
+    if (/^(stop|stopall|unsubscribe|cancel|end|quit)$/i.test(text)) {
+      this.store.setSmsOptOut(from, true)
+      return true
+    }
+    if (/^(start|unstop|yes)$/i.test(text)) {
+      this.store.setSmsOptOut(from, false)
+      return true
+    }
+    for (const r of this.line.list()) {
+      const p = this.line.participants(r.code).find((x) => x.from && normalNumber(x.from) === from)
+      if (!p) continue
+      const shown = shownParticipant(p, this.agentNumbers, this.config.knownCallers, this.calledIn)
+      await this.textRoom(r.code, text, { name: shown.name, from }).catch((e) => console.error('group.call: inbound text:', e))
+      return true
+    }
+    return true
   }
 
   // ---- our agents ----------------------------------------------------------

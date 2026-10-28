@@ -9,7 +9,8 @@ import type { AgentInvite, Line, Pass, Recording, Room, RoomEvent, User } from '
 import { pitFooter } from './pit-footer.js'
 import { RING_PLACEHOLDER } from './ring.js'
 import { ringFooter } from './ring-footer.js'
-import { AGENTS, CODE_LENGTH, FREE_ROOMS, formatNumber, hostLabel, INVITE_BONUS_MINUTES, PASS_DAYS, PASS_ROOMS, PASS_USD, telLink } from './service.js'
+import type { PublicEndpoint } from '@profullstack/webhooks'
+import { AGENTS, CODE_LENGTH, FREE_ROOMS, formatNumber, hostLabel, WEBHOOK_EVENTS, INVITE_BONUS_MINUTES, PASS_DAYS, PASS_ROOMS, PASS_USD, telLink } from './service.js'
 
 export const SITE = 'https://group.call.pit.world'
 export const REPO = 'https://github.com/moshcoder/group.call'
@@ -186,6 +187,15 @@ export function roomPage(ctx: Ctx, data: { room: Room; owner: boolean; live: { n
   <form method="post" action="/r/${esc(r.code)}/say" class="row">${csrfField(ctx)}<input name="text" maxlength="500" required placeholder="We'll start in two minutes." aria-label="What to say"><button>Say it</button></form>
 </section>
 ${
+  data.owner
+    ? `<section>
+  <h2>Text everyone on the line</h2>
+  <p class="muted small">Share a link (a readm3.com report, a PDF, anything): it is texted from ${esc(formatNumber(ctx.dialIn))} to everyone on the call. People on the call can do the same by texting the link to ${esc(formatNumber(ctx.dialIn))}. Reply STOP opts a number out.</p>
+  <form method="post" action="/r/${esc(r.code)}/text" class="row">${csrfField(ctx)}<input name="text" maxlength="600" required placeholder="https://readm3.com/..." aria-label="What to text"><button>Text them</button></form>
+</section>`
+    : ''
+}
+${
   data.owner && ctx.callPhones
     ? `<section>
   <h2>Call someone in</h2>
@@ -266,7 +276,7 @@ ${ownerTools}`,
   })
 }
 
-export function mePage(ctx: Ctx, data: { apiKey?: string; flash?: string; minutes?: { used: number; free: number; credits: number; left: number; unlimited: boolean } }): string {
+export function mePage(ctx: Ctx, data: { apiKey?: string; flash?: string; minutes?: { used: number; free: number; credits: number; left: number; unlimited: boolean }; webhooks?: PublicEndpoint[]; webhookSecret?: string }): string {
   const m = data.minutes
   const u = ctx.user!
   return layout({
@@ -291,6 +301,19 @@ ${flashNote(data.flash)}
   <pre><code>export GROUPCALL_KEY=gc_…
 bunx @profullstack/groupcall rooms
 claude mcp add groupcall -e GROUPCALL_KEY=gc_… -- bunx @profullstack/groupcall mcp</code></pre>
+</section>
+<section id="webhooks">
+  <h2>Webhooks</h2>
+  <p class="muted small">group.call POSTs what happens in your rooms to your URL: ${WEBHOOK_EVENTS.map((e) => `<code>${esc(e)}</code>`).join(', ')}. CloudEvents JSON, signed per <a href="https://www.standardwebhooks.com/">Standard Webhooks</a> (verify with <code>@profullstack/webhooks</code> or any Standard Webhooks library); retried for about three days.</p>
+  ${data.webhookSecret ? `<p class="note">Signing secret:</p><pre class="copyable"><code>${esc(data.webhookSecret)}</code></pre><button class="secondary" data-copy="${esc(data.webhookSecret)}">Copy</button>` : ''}
+  ${(data.webhooks ?? [])
+    .map(
+      (w) => `<div class="row"><code>${esc(w.url)}</code> <span class="muted small">${esc(w.events.join(', '))}${w.enabled ? '' : ` · off: ${esc(w.disabled_reason ?? 'disabled')}`}</span>
+  ${(['test', 'rotate', 'delete'] as const).map((a) => `<form method="post" action="/me/webhooks/${a}">${csrfField(ctx)}<input type="hidden" name="id" value="${esc(w.id)}"><button class="${a === 'delete' ? 'danger' : 'secondary'}">${a === 'test' ? 'Send a test' : a === 'rotate' ? 'New secret' : 'Remove'}</button></form>`).join('')}</div>`,
+    )
+    .join('')}
+  <form method="post" action="/me/webhooks/add" class="row">${csrfField(ctx)}<input name="url" type="url" required placeholder="https://example.com/webhooks/groupcall" aria-label="Webhook URL"><input name="events" placeholder="Events (blank = all, or room.*, text.sent)" aria-label="Events"><button>Add webhook</button></form>
+  <p class="muted small">Also from the CLI (<code>groupcall webhooks</code>), MCP and <code>/api/v1/webhooks</code>.</p>
 </section>
 <section>
   <h2>Delete your account</h2>
@@ -381,6 +404,8 @@ export function helpPage(ctx: Ctx): string {
 <section id="agents">
   <h2>Agents</h2>
   <p>An agent joins the way a person does: it places a phone call to ${esc(number)}, keys the code with touch tones, then listens (speech to text) and talks (text to speech) on that call. Our agents (riotcoder and cha0spunk) do this with ElevenLabs voices. Room owners on this instance can invite them from the room page.</p>
+  <p><b>Group texts.</b> Share a link on a call (a readm3.com report, a PDF, anything) and everyone on the line gets it by text from ${esc(number)}: text it to ${esc(number)} while you are on the call, use <b>Text everyone</b> on the room page, <code>groupcall text 4821 https://readm3.com/...</code>, MCP <code>text_room</code>, or ask riotcoder on the call. Reply STOP to stop getting them.</p>
+  <p><b>Webhooks.</b> Add a URL on <a href="/me#webhooks">your account</a> (or <code>groupcall webhook add</code>, MCP <code>create_webhook</code>, <code>POST /api/v1/webhooks</code>) and group.call POSTs <code>room.joined</code>, <code>room.left</code>, <code>transcript.line</code>, <code>text.sent</code>, <code>phone.called</code> and <code>recording.ready</code> to it as signed CloudEvents (Standard Webhooks, via <code>@profullstack/webhooks</code>).</p>
   <p>A room can also have a <b>greeter</b>: when somebody dials in before the host, riotcoder or cha0spunk joins, says hello, and keeps them company until the host arrives, then hands over and leaves. Set it on the room page (host = a phone number or a name on the line; blank means whoever joins next), with <code>groupcall greeter 4821 riotcoder 408-555-0101</code>, or MCP <code>set_greeter</code>.</p>
   <p>Your own agent can do the same from any telephony API (Telnyx, Twilio, ...). To have the room announce it by name, tell us the number it will call from, just before it dials:</p>
   <pre><code>curl -X POST ${SITE}/api/v1/rooms/4821/expect \\

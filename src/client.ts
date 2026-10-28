@@ -21,6 +21,7 @@ export type ApiRoom = {
   live?: ApiPerson[]
   activity?: ApiActivity[]
 }
+export type ApiWebhook = { id: string; url: string; events: string[]; description: string; enabled: boolean; failures: number; disabled_reason: string | null; created_at: string }
 export type ApiRecording = { id: string; status: 'recording' | 'saving' | 'ready' | 'failed'; duration_secs: number | null; bytes: number; started_at: string; ended_at: string | null; mp3: string | null; note?: string }
 export type ApiLine = { id: number; who: string; kind: 'person' | 'agent' | 'typed'; text: string; at: string }
 export type ApiMe = { name: string; email: string; dial_in: string; pass_until: string | null; room_limit: number; can_invite_agents: boolean; can_call_phones?: boolean; agents: string[]; rooms: ApiRoom[] }
@@ -110,6 +111,29 @@ export class GroupCallClient {
   /** Have an agent greet early callers until the host (a phone or a name; blank = next person) arrives. `null` turns it off. */
   greeter(code: string, agent: string | null, host = ''): Promise<{ greeter: string | null; host: string | null }> {
     return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/greeter`, { agent, host })
+  }
+  /** Text everyone on the line in a room (a link, a note): from the room number to every person on the call. */
+  text(code: string, text: string): Promise<{ sent: number; failed: number; skipped: number; error?: string }> {
+    return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/text`, { text })
+  }
+  /** Your webhook endpoints, and the events group.call sends. */
+  webhooks(): Promise<{ endpoints: ApiWebhook[]; event_types: string[] }> {
+    return this.call('GET', '/api/v1/webhooks')
+  }
+  addWebhook(url: string, events?: string[], description = ''): Promise<{ endpoint: ApiWebhook; secret: string }> {
+    return this.call('POST', '/api/v1/webhooks', { url, ...(events?.length ? { events } : {}), description })
+  }
+  removeWebhook(id: string): Promise<{ deleted: true }> {
+    return this.call('DELETE', `/api/v1/webhooks/${encodeURIComponent(id)}`)
+  }
+  testWebhook(id: string): Promise<{ ok: boolean; status: number | null; error: string | null }> {
+    return this.call('POST', `/api/v1/webhooks/${encodeURIComponent(id)}/test`)
+  }
+  rotateWebhook(id: string): Promise<{ secret: string }> {
+    return this.call('POST', `/api/v1/webhooks/${encodeURIComponent(id)}/rotate`)
+  }
+  webhookLog(id?: string): Promise<{ deliveries: { id: string; event_type: string; status: string; attempts: number; last_status: number | null; last_error: string | null; created_at: string }[] }> {
+    return this.call('GET', id ? `/api/v1/webhooks/${encodeURIComponent(id)}/deliveries` : '/api/v1/webhooks/deliveries')
   }
   /** Record every call in the room (or stop). */
   record(code: string, on = true): Promise<{ record: boolean; recording: boolean }> {

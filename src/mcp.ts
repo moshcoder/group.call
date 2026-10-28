@@ -70,6 +70,22 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
     { code, agent: z.enum(['riotcoder', 'cha0spunk', 'off']), host: z.string().max(40).optional() },
     wrap(({ code, agent, host }) => client.greeter(code, agent === 'off' ? null : agent, host ?? '')),
   )
+  server.tool(
+    'text_room',
+    'Text everyone on the line in a room: a link to a readm3.com report, a PDF, a note. Goes from the room number to every person on the call (not agents); STOP opts a number out.',
+    { code, text: z.string().min(1).max(600) },
+    wrap(({ code, text }) => client.text(code, text)),
+  )
+  server.tool('list_webhooks', 'Your webhook endpoints and the event types group.call sends.', {}, wrap(() => client.webhooks()))
+  server.tool(
+    'create_webhook',
+    'Have group.call POST room events (room.joined, room.left, transcript.line, text.sent, phone.called, recording.ready) to a URL, as signed CloudEvents (Standard Webhooks). Returns the signing secret. events: patterns like "room.*"; omit for all.',
+    { url: z.string().url(), events: z.array(z.string()).optional(), description: z.string().max(200).optional() },
+    wrap(({ url, events, description }) => client.addWebhook(url, events, description ?? '')),
+  )
+  server.tool('test_webhook', 'Send a webhook.test event to an endpoint now.', { id: z.string() }, wrap(({ id }) => client.testWebhook(id)))
+  server.tool('delete_webhook', 'Remove a webhook endpoint.', { id: z.string() }, wrap(({ id }) => client.removeWebhook(id)))
+  server.tool('webhook_deliveries', 'Recent webhook deliveries, optionally for one endpoint.', { id: z.string().optional() }, wrap(({ id }) => client.webhookLog(id)))
   server.tool('record_room', 'Record every call in a room to one mp3 (everyone mixed), saved when the call ends; on=false stops.', { code, on: z.boolean().default(true) }, wrap(({ code, on }) => client.record(code, on)))
   server.tool('list_recordings', "A room's recordings, with mp3 links (fetch them with your GROUPCALL_KEY as a bearer).", { code }, wrap(({ code }) => client.recordings(code)))
   server.tool('call_sip_agent', 'Dial a voice agent (e.g. an ElevenLabs agent) into a room over SIP: joins on answer, no press 1. X- headers ride on the INVITE. Operators only.', { code, sip: z.string().regex(/^sips?:/), name: z.string().min(1).max(40), headers: z.record(z.string(), z.string()).optional() }, wrap(({ code, sip, name, headers }) => client.callSip(code, sip, name, headers ?? {})))
