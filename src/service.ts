@@ -12,7 +12,7 @@ import { Credits, sqliteStore } from '@profullstack/redeem-credits'
 import { Affiliates, sqliteStore as affiliateStore } from '@profullstack/affiliates'
 import { mkdirSync, unlinkSync } from 'node:fs'
 import { GroupCall, newRoomCode, normalNumber, type Participant, type Recording as SavedRecording, type TelnyxEvent } from '@profullstack/group-call'
-import { defaultDeck, Router, type Route, type RouteChoice } from './routing.js'
+import { defaultDeck, learnedPrefix, Router, type Route, type RouteChoice } from './routing.js'
 import type { AgentInvite, Line, Pass, Recording, Room, RoomEvent, Store, User } from './db.js'
 
 export class UserError extends Error {
@@ -48,6 +48,11 @@ export type Config = {
   routes?: Route[]
   /** Dearest a minute a phone call-in may cost, USD. */
   maxRate?: number
+  /**
+   * What every call this instance places may cost in a day, USD (UTC days, as Telnyx counts).
+   * At the cap no new call goes out and the ones running are hung up.
+   */
+  dailySpendUsd?: number
   /** Main prompt voice; an ElevenLabs voice needs telnyxVoiceKeyRef. */
   voice?: string
   telnyxVoiceKeyRef?: string
@@ -99,6 +104,13 @@ export const CODE_LENGTH = 4
 export const MAX_NAME = 60
 /** Phones a room may ring from the keypad (* number #) in an hour; the web and API have their own limit. */
 export const LINE_DIALS_PER_HOUR = 10
+/** What calls out may cost a day, all rooms together, unless configured. */
+export const DAILY_SPEND_USD = 5
+/** A SIP agent's minute, until call.cost says (Telnyx charges SIP termination too). */
+const SIP_RATE = 0.01
+/** Telnyx ends any call at four hours; a leg whose hangup we missed is counted no longer. */
+const MAX_CALL_MS = 4 * 60 * 60_000
+const utcDayStart = (now: number) => now - (now % 86_400_000)
 
 /** A room's code shown for reading and dialling: "4821". */
 export const formatNumber = (e164: string) => {
@@ -201,6 +213,72 @@ export class GroupCallService {
           })
         : null
     if (config.recordingsDir) mkdirSync(config.recordingsDir, { recursive: true })
+    // The day's spend is checked before every call, and again here while calls run.
+    if (this.line) setInterval(() => void this.enforceBudget().catch((e) => console.error('group.call: budget:', e)), 15_000).unref()
+  }
+
+  // ---- what calls out cost -------------------------------------------------
+
+  get dailyCap(): number {
+    return this.config.dailySpendUsd ?? DAILY_SPEND_USD
+  }
+
+  /**
+   * What calls placed today (UTC) have cost: Telnyx's own figure for every call it
+   * has priced, and minutes so far at the route's rate for the rest, rounded up
+   * to whole minutes the way calls are billed.
+   */
+  spentToday(now = Date.now()): number {
+    let usd = 0
+    for (const d of this.store.dialledSince(utcDayStart(now))) {
+      if (d.cost !== null) usd += d.cost
+      else usd += Math.ceil(Math.min((d.endedAt ?? now) - d.placedAt, MAX_CALL_MS) / 60_000) * d.rate
+    }
+    return Math.round(usd * 10_000) / 10_000
+  }
+
+  /** Over the day's cap: hang up every call this instance placed that is still going. */
+  async enforceBudget(now = Date.now()): Promise<number> {
+    if (this.spentToday(now) < this.dailyCap) return 0
+    const live = this.store.dialledSince(utcDayStart(now) - MAX_CALL_MS).filter((d) => d.endedAt === null && now - d.placedAt < MAX_CALL_MS)
+    for (const d of live) {
+      console.warn(`group.call: daily call budget ($${this.dailyCap}) reached, hanging up ${d.provider} call ${d.leg}`)
+      await this.hangupLeg(d.leg)
+      this.store.endDialled(d.leg, now)
+    }
+    return live.length
+  }
+
+  /** Hang a leg up whether or not it has reached the room yet (still ringing, or at the press-1 question). */
+  private async hangupLeg(leg: string): Promise<void> {
+    try {
+      await (this.config.fetch ?? fetch)(`https://api.telnyx.com/v2/calls/${encodeURIComponent(leg)}/actions/hangup`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.config.telnyxApiKey}`, 'content-type': 'application/json' },
+        body: '{}',
+      })
+    } catch (e) {
+      console.error('group.call: hangup failed:', e)
+    }
+  }
+
+  /** Refuse a call the day's budget cannot pay a first minute of. */
+  private budgetFor(rate: number, field: string): void {
+    if (this.dailyCap - this.spentToday() < rate) throw new UserError('group.call has used its calling budget for today. Try again after midnight UTC.', field, 429)
+  }
+
+  /** Telnyx's word on a leg we placed: its hangup, and later what it cost and so what a minute there really costs. */
+  private costEvent(event: TelnyxEvent): void {
+    const p = (event.payload ?? {}) as Record<string, any>
+    const leg = String(p.call_control_id ?? '')
+    const d = leg ? this.store.dialled(leg) : null
+    if (!d) return
+    if (event.event_type === 'call.hangup') this.store.endDialled(leg, Date.now())
+    if (event.event_type !== 'call.cost' || p.status === 'error' || p.total_cost == null) return
+    this.store.costDialled(leg, Number(p.total_cost), Date.now())
+    // Every part (termination, call control, ...) is billed by the minute; together they are the rate.
+    const rate = ((p.cost_parts ?? []) as { rate?: string }[]).reduce((sum, part) => sum + (Number(part.rate) || 0), 0)
+    if (rate > 0 && d.provider !== 'sip') this.store.learnRate(d.provider, learnedPrefix(d.to), rate)
   }
 
   // ---- recordings ----------------------------------------------------------
@@ -296,8 +374,10 @@ export class GroupCallService {
     const hosts = this.config.sipHosts ?? ['sip.rtc.elevenlabs.io']
     if (!m || !hosts.includes(m[1]!.toLowerCase())) throw new UserError(`Only SIP agents at ${hosts.join(', ')}.`, 'sip')
     const clean = name.replace(/\s+/g, ' ').trim().slice(0, 40) || 'agent'
+    this.budgetFor(SIP_RATE, 'sip')
     const placed = await this.line.dial(room.code, uri.trim(), { from: this.config.dialIn, connectionId, name: clean, direct: true, headers })
     if (!placed) throw new UserError('The call could not be placed. Try again in a minute.', 'sip', 502)
+    this.store.addDialled({ leg: placed.leg, code: room.code, to: uri.trim(), provider: 'sip', rate: SIP_RATE, placedAt: Date.now() })
     this.store.addEvent({ code: room.code, kind: 'invite', who: clean, text: 'is being called in' })
     this.emit({ type: 'invite', code: room.code, who: clean, text: 'is being called in', callers: this.line.callersIn(room.code), at: Date.now() })
     return { ringing: true, to: m[1]! }
@@ -425,6 +505,7 @@ export class GroupCallService {
       return false
     }
     this.recordQuality(event)
+    this.costEvent(event)
     // Answered asynchronously: Telnyx wants a quick 200, and the commands go back on their own.
     void this.line.handle(event).catch((e) => console.error('group call:', e))
     return true
@@ -634,6 +715,7 @@ export class GroupCallService {
     const { to, choices } = this.quote(phone)
     if (to === normalNumber(this.config.dialIn) || Object.values(this.agentNumbers).some((n) => normalNumber(n) === to)) throw new UserError('That is one of our own lines.', 'phone')
     const clean = name.replace(/\s+/g, ' ').trim().slice(0, 40)
+    this.budgetFor(choices[0]!.rate, 'phone')
     // Cheapest route first; a route that will not place the call hands over to the next.
     let placed: RouteChoice | null = null
     for (const route of choices) {
@@ -645,6 +727,7 @@ export class GroupCallService {
       })
       if (leg) {
         placed = route
+        this.store.addDialled({ leg: leg.leg, code: room.code, to, provider: route.provider, rate: route.rate, placedAt: Date.now() })
         break
       }
       console.warn(`group.call: ${route.provider} would not place a call to +${route.prefix}…, trying the next route`)
@@ -668,8 +751,8 @@ export class GroupCallService {
     const usOnly = this.router.northAmericaOnly
     const ask = usOnly ? 'Give a US or Canadian phone number, like 408-555-0101.' : 'Give the number with its country code, like +44 20 7946 0000.'
     if (to.startsWith('+1') ? !nanp : !/^\+[2-9]\d{6,14}$/.test(to)) throw new UserError(ask, 'phone')
-    const choices = this.router.choices(to)
-    if (!choices.length) throw new UserError(usOnly ? ask : 'This instance does not call that country, or not at a price it will pay.', 'phone')
+    const choices = this.router.choices(to, this.store.learnedRates())
+    if (!choices.length) throw new UserError(usOnly ? ask : 'group.call will not call that number: it is blocked, or dearer a minute than this instance pays.', 'phone')
     return { to, choices }
   }
 

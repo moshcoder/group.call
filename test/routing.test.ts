@@ -15,8 +15,17 @@ test('longest prefix prices a number on each route; blocked and over-cap routes 
     0.05,
   )
   expect(router.choices('+14085550101').map((c) => c.provider)).toEqual(['b', 'a'])
-  expect(router.choices('+18765551234')).toEqual([]) // blocked on a, over the cap on b
-  expect(router.northAmericaOnly).toBe(true)
+  expect(router.choices('+18765551234')).toEqual([]) // both over the cap
+  expect(router.choices('+19005551234').map((c) => c.provider)).toEqual(['b']) // premium: blocked on the default deck
+  expect(router.northAmericaOnly).toBe(false)
+  expect(new Router([{ provider: 'us', connectionId: 'c', rates: { '1': 0.007 } }]).northAmericaOnly).toBe(true)
+})
+
+test('a learned rate beats the deck on its route, but never unblocks a blocked prefix', () => {
+  const router = new Router([{ provider: 'a', connectionId: 'ca', rates: defaultDeck() }])
+  expect(router.choices('+442079460000')[0]).toMatchObject({ prefix: '', rate: 0.25 })
+  expect(router.choices('+442079460000', { a: { '442079': 0.012 } })[0]).toMatchObject({ prefix: '442079', rate: 0.012 })
+  expect(router.choices('+19005551234', { a: { '19005': 0.01 } })).toEqual([])
 })
 
 test('a routes file reads its CSV deck relative to itself; inline rates win', () => {

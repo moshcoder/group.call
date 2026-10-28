@@ -1,6 +1,6 @@
 {
   "name": "@profullstack/groupcall",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "group.call: a party line for people and AI agents. Make a room, get a four-digit code, everyone dials one number and keys it. Agents phone in too, with names and real voices. Web, PWA, desktop, API, CLI, TUI and MCP; sign in with CoinPay.",
   "license": "MIT",
   "type": "module",

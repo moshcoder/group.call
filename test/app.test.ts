@@ -458,12 +458,12 @@ describe('calling someone in', () => {
     expect(svc.live(room.code)).toEqual([expect.objectContaining({ name: 'Anthony', kind: 'person' })])
   })
 
-  test('a free account cannot ring phones, and nobody can ring abroad or our own lines', async () => {
+  test('a free account cannot ring phones, and nobody can ring premium lines or our own', async () => {
     const { call, telnyx } = setup()
     const mine = (await (await call('gc_guest', 'POST', '/api/v1/rooms', { name: 'mine' })).json()) as any
     expect((await call('gc_guest', 'POST', `/api/v1/rooms/${mine.code}/call`, { phone: '4086562473' })).status).toBe(402)
     const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
-    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+442071234567' })).status).toBe(400)
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+19005551234' })).status).toBe(400)
     expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: DIAL_IN })).status).toBe(400)
     expect((await call('gc_guest', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '4086562473' })).status).toBe(404)
     expect(telnyx.calls.some((c) => c.path === '/calls')).toBe(false)
@@ -487,16 +487,18 @@ describe('least-cost routing', () => {
     { provider: 'telnyx-intl', connectionId: 'conn-intl', from: '+442071230000', rates: { '44': 0.009, '447': 0.04, '1': 0.01 } },
   ]
 
-  test('the default deck is the US and Canada: Caribbean +1 area codes and 900 numbers are refused', async () => {
+  test('the default deck calls every country: the US and Canada at their rate, the rest (Caribbean +1 too) at the high estimate, premium lines never', async () => {
     const { call, telnyx } = setup()
     const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
-    for (const phone of ['+18765551234', '+18095551234', '+19005551234']) {
+    for (const phone of ['+19005551234', '+19765551234']) {
       const r = await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone })
       expect(r.status).toBe(400)
-      expect(((await r.json()) as any).error).toContain('US or Canadian')
+      expect(((await r.json()) as any).error).toContain('will not call that number')
     }
     expect(telnyx.calls.some((c) => c.path === '/calls')).toBe(false)
-    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+16045551234' })).status).toBe(202)
+    expect(await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+16045551234' })).json()).toMatchObject({ rate: 0.007 })
+    expect(await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+18765551234' })).json()).toMatchObject({ rate: 0.25 })
+    expect(await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+442079460000' })).json()).toMatchObject({ rate: 0.25 })
   })
 
   test('a call goes out on the cheapest route for its prefix, with that route caller id', async () => {
@@ -525,7 +527,7 @@ describe('least-cost routing', () => {
     const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
     const mobile = await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+447700900123' })
     expect(mobile.status).toBe(400)
-    expect(((await mobile.json()) as any).error).toContain('does not call that country')
+    expect(((await mobile.json()) as any).error).toContain('will not call that number')
     expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+33142685300' })).status).toBe(400)
     expect(telnyx.calls.some((c) => c.path === '/calls')).toBe(false)
   })
@@ -535,13 +537,54 @@ describe('least-cost routing', () => {
     const r = (await (await call('gc_guest', 'GET', '/api/v1/rates?phone=%2B442079460000')).json()) as any
     expect(r).toEqual({
       to: '+442079460000',
-      max_rate: 0.05,
+      max_rate: 1,
+      daily_cap_usd: 5,
+      spent_today_usd: 0,
       routes: [
         { provider: 'telnyx-intl', prefix: '+44', usd_per_minute: 0.009 },
         { provider: 'telnyx', prefix: '+44', usd_per_minute: 0.02 },
       ],
     })
     expect((await call('gc_guest', 'GET', '/api/v1/rates?phone=%2B33142685300')).status).toBe(400)
+  })
+})
+
+describe('the daily calling budget', () => {
+  const cost = (total: string, rates: string[]) => ({ call_control_id: 'out-1', status: 'success', total_cost: total, cost_parts: rates.map((rate) => ({ call_part: 'x', rate, cost: rate, currency: 'USD' })) })
+
+  test("Telnyx's call.cost is what the day spent and what a minute there really costs from then on", async () => {
+    const { call, event, svc } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
+    expect(await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+442079460000' })).json()).toMatchObject({ rate: 0.25 })
+    await event('call.hangup', { call_control_id: 'out-1' })
+    await event('call.cost', cost('0.0345', ['0.0095', '0.002']))
+    expect(svc.spentToday()).toBe(0.0345)
+    const q = (await (await call('gc_op', 'GET', '/api/v1/rates?phone=%2B442079461111')).json()) as any
+    expect(q.routes[0]).toEqual({ provider: 'telnyx', prefix: '+442079', usd_per_minute: 0.0115 })
+    expect(q.spent_today_usd).toBe(0.0345)
+  })
+
+  test('at the cap no new call goes out, by the web or from the keypad', async () => {
+    const { call, event, telnyx } = setup({ dailySpendUsd: 0.5 })
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+442079460000' })).status).toBe(202)
+    await event('call.cost', cost('0.4', ['0.25']))
+    const r = await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+442079460000' })
+    expect(r.status).toBe(429)
+    expect(((await r.json()) as any).error).toContain('calling budget for today')
+    // A US minute still fits in what is left.
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+14085550101' })).status).toBe(202)
+    expect(telnyx.calls.filter((c) => c.path === '/calls').length).toBe(2)
+  })
+
+  test('a running call that takes the day over the cap is hung up, ringing or not', async () => {
+    const { call, svc, telnyx } = setup({ dailySpendUsd: 0.5 })
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
+    await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+442079460000' })
+    expect(await svc.enforceBudget(Date.now() + 60_000)).toBe(0) // one minute at 0.25: under
+    expect(await svc.enforceBudget(Date.now() + 2 * 60_000 + 1)).toBe(1) // three minutes: over
+    expect(telnyx.calls.some((c) => c.path === '/calls/out-1/actions/hangup')).toBe(true)
+    expect(await svc.enforceBudget(Date.now() + 10 * 60_000)).toBe(0) // and only once
   })
 })
 
@@ -568,7 +611,7 @@ describe('calling someone in from the call', () => {
     expect(telnyx.calls.at(-1)?.body.payload).toContain('riotcoder is calling you into Standup. Press 1 to join.')
   })
 
-  test("a room whose owner has no pass says so, and an overseas number is refused out loud", async () => {
+  test("a room whose owner has no pass says so, and a premium number is refused out loud", async () => {
     const { call, event, telnyx } = setup()
     const mine = (await (await call('gc_guest', 'POST', '/api/v1/rooms', { name: 'mine' })).json()) as any
     await event('call.initiated', { call_control_id: 'leg-g', direction: 'incoming', from: '+15550001111' })
@@ -580,8 +623,8 @@ describe('calling someone in from the call', () => {
     const ops = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
     await event('call.initiated', { call_control_id: 'leg-o', direction: 'incoming', from: '+15550002222' })
     await event('call.gather.ended', { call_control_id: 'leg-o', digits: ops.code })
-    await press(event, 'leg-o', '*442071234567#')
-    expect(telnyx.calls.at(-1)?.body.payload).toBe('Give a US or Canadian phone number.')
+    await press(event, 'leg-o', '*19005551234#')
+    expect(telnyx.calls.at(-1)?.body.payload).toBe('group.call will not call that number: it is blocked, or dearer a minute than this instance pays.')
     expect(telnyx.calls.some((c) => c.path === '/calls')).toBe(false)
   })
 })

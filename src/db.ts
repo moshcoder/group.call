@@ -31,6 +31,9 @@ export type AgentInvite = { id: string; code: string; agent: string; sub: string
 
 export type Pass = { id: string; sub: string; amountCents: number; status: string; checkoutUrl: string; days: number; paidAt: number | null; createdAt: number }
 
+/** A call the room placed (a phone rung in): what it was estimated to cost a minute and, once Telnyx says, what it cost. */
+export type DialledLeg = { leg: string; code: string; to: string; provider: string; rate: number; placedAt: number; endedAt: number | null; cost: number | null }
+
 export class Sealer {
   private readonly key: Buffer
   constructor(secret: string) {
@@ -106,6 +109,12 @@ export class Store {
         mos_in REAL, mos_out REAL, jitter_ms REAL, loss_pct REAL, at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS leg_quality_code ON leg_quality(code, id DESC);
+      CREATE TABLE IF NOT EXISTS dialled_legs (
+        leg TEXT PRIMARY KEY, code TEXT NOT NULL, to_number TEXT NOT NULL, provider TEXT NOT NULL,
+        rate REAL NOT NULL, placed_at INTEGER NOT NULL, ended_at INTEGER, cost REAL
+      );
+      CREATE INDEX IF NOT EXISTS dialled_legs_placed ON dialled_legs(placed_at);
+      CREATE TABLE IF NOT EXISTS learned_rates (provider TEXT NOT NULL, prefix TEXT NOT NULL, rate REAL NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (provider, prefix));
       CREATE TABLE IF NOT EXISTS live_rooms (code TEXT PRIMARY KEY, conference_id TEXT NOT NULL, started_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS live_legs (
         leg TEXT PRIMARY KEY,
@@ -319,6 +328,41 @@ export class Store {
     return this.minutesUsed(sub, month)
   }
 
+  // ---- what calls out cost ----------------------------------------------
+
+  addDialled(d: Omit<DialledLeg, 'endedAt' | 'cost'>): void {
+    this.db.query('INSERT OR REPLACE INTO dialled_legs (leg, code, to_number, provider, rate, placed_at) VALUES (?, ?, ?, ?, ?, ?)').run(d.leg, d.code, d.to, d.provider, d.rate, d.placedAt)
+  }
+
+  dialled(leg: string): DialledLeg | null {
+    const r = this.db.query('SELECT * FROM dialled_legs WHERE leg = ?').get(leg) as any
+    return r ? dialledRow(r) : null
+  }
+
+  /** Calls placed since `since` (ms), the day's spend is counted from. */
+  dialledSince(since: number): DialledLeg[] {
+    return (this.db.query('SELECT * FROM dialled_legs WHERE placed_at >= ? ORDER BY placed_at').all(since) as any[]).map(dialledRow)
+  }
+
+  endDialled(leg: string, at: number): void {
+    this.db.query('UPDATE dialled_legs SET ended_at = ? WHERE leg = ? AND ended_at IS NULL').run(at, leg)
+  }
+
+  costDialled(leg: string, cost: number, at: number): void {
+    this.db.query('UPDATE dialled_legs SET cost = ?, ended_at = COALESCE(ended_at, ?) WHERE leg = ?').run(cost, at, leg)
+  }
+
+  learnRate(provider: string, prefix: string, rate: number, now = Date.now()): void {
+    this.db.query('INSERT OR REPLACE INTO learned_rates (provider, prefix, rate, updated_at) VALUES (?, ?, ?, ?)').run(provider, prefix, rate, now)
+  }
+
+  /** What Telnyx actually charged a minute, by route and number prefix. */
+  learnedRates(): Record<string, Record<string, number>> {
+    const out: Record<string, Record<string, number>> = {}
+    for (const r of this.db.query('SELECT provider, prefix, rate FROM learned_rates').all() as any[]) (out[r.provider] ??= {})[r.prefix] = r.rate
+    return out
+  }
+
   // ---- call quality ------------------------------------------------------
 
   addQuality(q: Omit<LegQuality, 'at'>, now = Date.now()): void {
@@ -483,3 +527,5 @@ export class Store {
     return until > now ? until : null
   }
 }
+
+const dialledRow = (r: any): DialledLeg => ({ leg: r.leg, code: r.code, to: r.to_number, provider: r.provider, rate: r.rate, placedAt: r.placed_at, endedAt: r.ended_at, cost: r.cost })

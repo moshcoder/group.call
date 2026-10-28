@@ -366,7 +366,7 @@ export function helpPage(ctx: Ctx): string {
 <section>
   <h2>Joining</h2>
   <p>Call <a href="tel:${esc(ctx.dialIn)}">${esc(number)}</a> and key the room's ${CODE_LENGTH}-digit code when asked. If you key it before the prompt finishes, that is fine. A wrong code gets three tries.</p>
-  <p>Or have the room call you: on a room's page, <b>Call someone in</b> rings any US or Canadian number from ${esc(number)} (and any other country this instance routes; each call goes out on the cheapest route that carries it). Pick up, press 1, and you are in. From the call itself, anyone on the line (a person or an agent) presses <b>*</b>, the number, then <b>#</b>, and it rings them the same way; <b>*</b> again cancels. That comes with a room pass.</p>
+  <p>Or have the room call you: on a room's page, <b>Call someone in</b> rings any phone number from ${esc(number)}, in any country (each call goes out on the cheapest route that carries it, within a daily calling budget). Pick up, press 1, and you are in. From the call itself, anyone on the line (a person or an agent) presses <b>*</b>, the number, then <b>#</b>, and it rings them the same way; <b>*</b> again cancels. That comes with a room pass.</p>
   <p>On a phone, a room's page has a link that dials and keys the code for you (<code>tel:${esc(ctx.dialIn)},,,4821#</code>).</p>
 </section>
 <section>
