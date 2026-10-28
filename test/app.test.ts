@@ -13,12 +13,22 @@ function telnyxKeys() {
 
 /** How Telnyx answers a text: sent, or 40010 (no 10DLC campaign). */
 let smsReply: 'ok' | '40010' = 'ok'
+/** How the fake smshub.dev answers: fine, down, or refusing the key. */
+let smshubMode: 'ok' | 'down' | 'badkey' = 'ok'
 
 /** A fetch that records what Telnyx was asked; a conference creation answers with an id. */
 function telnyxRecorder() {
   const calls: { path: string; body: any }[] = []
   const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     if (String(url).startsWith('https://files.test/')) return new Response(new Uint8Array([0x49, 0x44, 0x33, 1, 2, 3]), { status: 200 })
+    if (String(url).startsWith('https://smshub.test/')) {
+      const path = String(url).replace('https://smshub.test', '')
+      calls.push({ path: `smshub:${init?.method ?? 'GET'} ${path}`, body: init?.body ? JSON.parse(String(init.body)) : {} })
+      if (smshubMode === 'badkey') return new Response(JSON.stringify({ error: 'Invalid API key' }), { status: 401 })
+      if (smshubMode === 'down') return new Response(JSON.stringify({ error: 'Internal server error' }), { status: 500 })
+      if (path.endsWith('/send')) return new Response(JSON.stringify({ sent: 2, failed: 0, skipped: 0, from: '+14155550100' }), { status: 200 })
+      return new Response(JSON.stringify(init?.method === 'POST' ? { id: 'g1' } : { groups: [] }), { status: init?.method === 'POST' ? 201 : 200 })
+    }
     const path = String(url).replace('https://api.telnyx.com/v2', '')
     calls.push({ path, body: JSON.parse(String(init?.body ?? '{}')) })
     if (path === '/messages' && smsReply === '40010') return new Response(JSON.stringify({ errors: [{ code: '40010', title: 'Not 10DLC registered' }] }), { status: 400 })
@@ -821,7 +831,7 @@ describe('group texts', () => {
     await join(event, 'leg-2', '+14085550102', room.code)
     await join(event, 'leg-a', AGENT_CALLER, room.code)
     const r = (await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/text`, { text: 'The report: https://readm3.com/r/abc' })).json()) as any
-    expect(r).toEqual({ sent: 2, failed: 0, skipped: 0 })
+    expect(r).toEqual({ sent: 2, failed: 0, skipped: 0, via: 'telnyx' })
     const sent = texts(telnyx.calls)
     expect(sent.map((t) => t.to).sort()).toEqual(['+14085550101', '+14085550102'])
     expect(sent[0]!.from).toBe(DIAL_IN)
@@ -888,5 +898,44 @@ describe('webhooks', () => {
     expect(got[0]!.body).toMatchObject({ type: 'room.joined', source: expect.any(String), subject: `room:${room.code}`, data: { code: room.code, room: 'Standup', kind: 'person', callers: 1 } })
     const log = ((await (await call('gc_op', 'GET', `/api/v1/webhooks/${endpoint.id}/deliveries`)).json()) as any).deliveries
     expect(log[0]).toMatchObject({ event_type: 'room.joined', status: 'delivered' })
+  })
+})
+
+describe('group texts through smshub.dev (optional)', () => {
+  const join = async (event: (t: string, p: Record<string, unknown>) => Promise<unknown>, leg: string, from: string, code: string) => {
+    await event('call.initiated', { call_control_id: leg, direction: 'incoming', from })
+    await event('call.gather.ended', { call_control_id: leg, digits: code })
+  }
+
+  test('a linked account texts its room as an smshub group from its own number; smshub down falls back to the room number', async () => {
+    smsReply = 'ok'
+    const { call, event, telnyx } = setup({ smshubUrl: 'https://smshub.test' })
+    smshubMode = 'badkey'
+    expect((await call('gc_op', 'POST', '/api/v1/me/smshub', { key: 'smshub_nope12345678' })).status).toBe(400)
+    smshubMode = 'ok'
+    expect((await call('gc_op', 'POST', '/api/v1/me/smshub', { key: 'not-a-key' })).status).toBe(400)
+    const linked = (await (await call('gc_op', 'POST', '/api/v1/me/smshub', { key: 'smshub_live12345678', from: '415-555-0100', relay: true })).json()) as any
+    expect(linked).toMatchObject({ linked: true, from: '+14155550100', relay: true })
+    expect(((await (await call('gc_op', 'GET', '/api/v1/me/smshub')).json()) as any).linked).toBe(true)
+
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Standup' })).json()) as any
+    await join(event, 'leg-1', '+14085550101', room.code)
+    await join(event, 'leg-2', '+14085550102', room.code)
+    const r = (await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/text`, { text: 'https://readm3.com/r/abc' })).json()) as any
+    expect(r).toMatchObject({ sent: 2, failed: 0, via: 'smshub' })
+    const group = telnyx.calls.find((c) => c.path === 'smshub:POST /api/v1/groups')!
+    expect(group.body).toMatchObject({ external_ref: `groupcall:${room.code}`, from: '+14155550100', relay: true })
+    expect(group.body.members.map((m: any) => m.phone).sort()).toEqual(['+14085550101', '+14085550102'])
+    const send = telnyx.calls.find((c) => c.path === `smshub:POST /api/v1/groups/groupcall%3A${room.code}/send`)!
+    expect(send.body.message).toStartWith('Anthony in Standup: https://readm3.com/r/abc')
+    expect(telnyx.calls.some((c) => c.path === '/messages')).toBe(false)
+
+    smshubMode = 'down'
+    const fallback = (await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/text`, { text: 'again' })).json()) as any
+    expect(fallback).toMatchObject({ sent: 2, via: 'telnyx' })
+    expect(telnyx.calls.filter((c) => c.path === '/messages').length).toBe(2)
+
+    smshubMode = 'ok'
+    expect(((await (await call('gc_op', 'DELETE', '/api/v1/me/smshub')).json()) as any).linked).toBe(false)
   })
 })

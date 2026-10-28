@@ -83,6 +83,8 @@ export type Config = {
   recordingsDir?: string
   /** SIP hosts an operator may dial a voice agent in from (ElevenLabs by default). */
   sipHosts?: string[]
+  /** Where smshub.dev lives, for accounts that send their group texts through it. */
+  smshubUrl?: string
   /** Telnyx messaging profile 510-616-W3BS texts from; inbound texts come back on its webhook. */
   messagingProfileId?: string
   /** Checks on customer webhook URLs; tests allow private addresses. */
@@ -805,7 +807,7 @@ export class GroupCallService {
    * number, except whoever sent it, agents, and numbers that said STOP. The room hears that
    * it happened, the transcript keeps it, and the owner's webhooks get `text.sent`.
    */
-  async textRoom(code: string, text: string, by: { name: string; from?: string }): Promise<{ sent: number; failed: number; skipped: number; error?: string }> {
+  async textRoom(code: string, text: string, by: { name: string; from?: string }): Promise<{ sent: number; failed: number; skipped: number; via: 'telnyx' | 'smshub'; error?: string }> {
     const room = this.store.room(code)
     if (!room) throw new UserError('No such room.', 'code', 404)
     const clean = text.replace(/\s+/g, ' ').trim()
@@ -834,6 +836,21 @@ export class GroupCallService {
     let sent = 0
     let failed = 0
     let error: string | undefined
+    let via: 'telnyx' | 'smshub' = 'telnyx'
+    // The owner's own smshub.dev, when linked: the room is an smshub group and the text goes from
+    // their number, into their smshub inbox. Anything that goes wrong there falls back to our line.
+    const link = numbers.size ? this.store.smshubLink(room.sub) : null
+    if (link) {
+      const firsts = [...numbers].map((n) => this.store.smsFirst(n)).some(Boolean)
+      const r = await this.smshubSend(link, room, [...numbers], firsts ? `${body}\n\nReply STOP to stop.` : body)
+      if (r.ok) {
+        via = 'smshub'
+        sent = r.sent
+        failed = r.failed
+        if (r.error) error = r.error
+        numbers.clear()
+      } else console.error(`group.call: smshub send for ${room.code} failed, using our line: ${r.error}`)
+    }
     for (const to of numbers) {
       const first = this.store.smsFirst(to)
       const r = await this.sendSms(to, first ? `${body}\n\ngroup.call texts links shared on your call. Reply STOP to stop.` : body)
@@ -847,8 +864,78 @@ export class GroupCallService {
     this.store.addEvent({ code: room.code, kind: 'text', who: shown, text: clean })
     this.addLine(room.code, shown, 'typed', `(texted everyone) ${clean}`)
     if (sent > 0) void this.line.say(room.code, `${shown} texted everyone on the call${/https?:\/\//.test(clean) ? ' a link' : ''}.`).catch(() => {})
-    this.hook(room.code, 'text.sent', { who: shown, text: clean, sent, failed, skipped })
-    return { sent, failed, skipped, ...(error ? { error } : {}) }
+    this.hook(room.code, 'text.sent', { who: shown, text: clean, sent, failed, skipped, via })
+    return { sent, failed, skipped, via, ...(error ? { error } : {}) }
+  }
+
+  /**
+   * Keep the room's smshub group (external_ref groupcall:<code>) equal to who is on the line,
+   * then text it. ok=false means smshub could not take it at all (bad key, no number, down).
+   */
+  private async smshubSend(
+    link: { key: string; from: string | null; relay: boolean },
+    room: Room,
+    phones: string[],
+    message: string,
+  ): Promise<{ ok: true; sent: number; failed: number; error?: string } | { ok: false; error: string }> {
+    const base = (this.config.smshubUrl ?? 'https://smshub.dev').replace(/\/+$/, '')
+    const doFetch = this.config.fetch ?? fetch
+    const call = async (path: string, body: unknown) => {
+      const res = await doFetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${link.key}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const j = (await res.json().catch(() => ({}))) as Record<string, any>
+      return { ok: res.ok, status: res.status, j }
+    }
+    try {
+      const ref = `groupcall:${room.code}`
+      const saved = await call('/api/v1/groups', {
+        name: `${room.name} (group.call ${room.code})`.slice(0, 80),
+        external_ref: ref,
+        relay: link.relay,
+        ...(link.from ? { from: link.from } : {}),
+        members: phones.map((phone) => ({ phone })),
+      })
+      if (!saved.ok) return { ok: false, error: String(saved.j.error ?? `smshub ${saved.status}`) }
+      const sent = await call(`/api/v1/groups/${encodeURIComponent(ref)}/send`, { message })
+      if (!sent.ok) return { ok: false, error: String(sent.j.error ?? `smshub ${sent.status}`) }
+      const n = Number(sent.j.sent ?? 0)
+      const f = Number(sent.j.failed ?? 0)
+      // smshub took it but nothing went out: our line may still reach them.
+      if (n === 0 && f > 0) return { ok: false, error: String(sent.j.errors?.[0]?.error ?? 'every text failed') }
+      return { ok: true, sent: n, failed: f, ...(f ? { error: String(sent.j.errors?.[0]?.error ?? '') } : {}) }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  }
+
+  /**
+   * Link an account's smshub.dev (an smshub_ API key, and optionally which of its numbers to text
+   * from): its rooms' group texts then go out through smshub as a group. The key is checked first.
+   */
+  async linkSmshub(user: User, input: { key?: string; from?: string; relay?: boolean }): Promise<{ linked: true; from: string | null; relay: boolean; groups: number }> {
+    const key = String(input.key ?? '').trim()
+    if (!/^smshub_[A-Za-z0-9_-]{8,}$/.test(key)) throw new UserError('Paste an smshub API key (smshub_..., from smshub.dev Settings > API Keys).', 'key')
+    const from = input.from ? normalNumber(String(input.from)) : ''
+    const base = (this.config.smshubUrl ?? 'https://smshub.dev').replace(/\/+$/, '')
+    const res = await (this.config.fetch ?? fetch)(`${base}/api/v1/groups`, { headers: { authorization: `Bearer ${key}` } }).catch(() => null)
+    if (!res || res.status === 401 || res.status === 403) throw new UserError('smshub did not accept that key.', 'key')
+    if (!res.ok) throw new UserError(`smshub answered ${res.status}; try again in a minute.`, 'key', 502)
+    const j = (await res.json().catch(() => ({}))) as { groups?: unknown[] }
+    this.store.setSmshubLink(user.sub, { key, from: from || null, relay: input.relay === true })
+    return { linked: true, from: from || null, relay: input.relay === true, groups: j.groups?.length ?? 0 }
+  }
+
+  unlinkSmshub(user: User): { linked: false } {
+    this.store.setSmshubLink(user.sub, null)
+    return { linked: false }
+  }
+
+  smshubStatus(user: User): { linked: boolean; from: string | null; relay: boolean } {
+    const l = this.store.smshubLink(user.sub)
+    return { linked: Boolean(l), from: l?.from ?? null, relay: l?.relay ?? false }
   }
 
   /** One text from the room's number, with Telnyx's reason when it will not go. */

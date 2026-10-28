@@ -113,8 +113,18 @@ export class GroupCallClient {
     return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/greeter`, { agent, host })
   }
   /** Text everyone on the line in a room (a link, a note): from the room number to every person on the call. */
-  text(code: string, text: string): Promise<{ sent: number; failed: number; skipped: number; error?: string }> {
+  text(code: string, text: string): Promise<{ sent: number; failed: number; skipped: number; via?: 'telnyx' | 'smshub'; error?: string }> {
     return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/text`, { text })
+  }
+  /** Send your rooms' group texts through your smshub.dev account (optional). */
+  smshub(): Promise<{ linked: boolean; from: string | null; relay: boolean }> {
+    return this.call('GET', '/api/v1/me/smshub')
+  }
+  linkSmshub(key: string, from?: string, relay = false): Promise<{ linked: true; from: string | null; relay: boolean; groups: number }> {
+    return this.call('POST', '/api/v1/me/smshub', { key, ...(from ? { from } : {}), relay })
+  }
+  unlinkSmshub(): Promise<{ linked: false }> {
+    return this.call('DELETE', '/api/v1/me/smshub')
   }
   /** Your webhook endpoints, and the events group.call sends. */
   webhooks(): Promise<{ endpoints: ApiWebhook[]; event_types: string[] }> {

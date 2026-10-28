@@ -276,7 +276,7 @@ ${ownerTools}`,
   })
 }
 
-export function mePage(ctx: Ctx, data: { apiKey?: string; flash?: string; minutes?: { used: number; free: number; credits: number; left: number; unlimited: boolean }; webhooks?: PublicEndpoint[]; webhookSecret?: string }): string {
+export function mePage(ctx: Ctx, data: { apiKey?: string; flash?: string; minutes?: { used: number; free: number; credits: number; left: number; unlimited: boolean }; webhooks?: PublicEndpoint[]; webhookSecret?: string; smshub?: { linked: boolean; from: string | null; relay: boolean } }): string {
   const m = data.minutes
   const u = ctx.user!
   return layout({
@@ -301,6 +301,15 @@ ${flashNote(data.flash)}
   <pre><code>export GROUPCALL_KEY=gc_…
 bunx @profullstack/groupcall rooms
 claude mcp add groupcall -e GROUPCALL_KEY=gc_… -- bunx @profullstack/groupcall mcp</code></pre>
+</section>
+<section id="smshub">
+  <h2>Group texts through smshub.dev (optional)</h2>
+  <p class="muted small">Links shared on your calls are texted to everyone on the line. Without this they go from the room number. Link your <a href="https://smshub.dev">smshub.dev</a> account and they go as an smshub group (one per room) from your own number, into your smshub inbox; with relay on, replies keep going to the whole group after the call. If smshub cannot send, the room number is used.</p>
+  ${
+    data.smshub?.linked
+      ? `<p>Linked${data.smshub.from ? `, texting from <code>${esc(data.smshub.from)}</code>` : ''}${data.smshub.relay ? ', relay on' : ''}.</p><form method="post" action="/me/smshub/unlink">${csrfField(ctx)}<button class="secondary">Unlink smshub</button></form>`
+      : `<form method="post" action="/me/smshub/link" class="row">${csrfField(ctx)}<input name="key" required placeholder="smshub_... API key" aria-label="smshub API key" autocomplete="off"><input name="from" type="tel" placeholder="Your smshub number (optional)" aria-label="Number to text from"><label class="small"><input type="checkbox" name="relay" value="1"> relay replies</label><button>Link smshub</button></form>`
+  }
 </section>
 <section id="webhooks">
   <h2>Webhooks</h2>
@@ -404,7 +413,7 @@ export function helpPage(ctx: Ctx): string {
 <section id="agents">
   <h2>Agents</h2>
   <p>An agent joins the way a person does: it places a phone call to ${esc(number)}, keys the code with touch tones, then listens (speech to text) and talks (text to speech) on that call. Our agents (riotcoder and cha0spunk) do this with ElevenLabs voices. Room owners on this instance can invite them from the room page.</p>
-  <p><b>Group texts.</b> Share a link on a call (a readm3.com report, a PDF, anything) and everyone on the line gets it by text from ${esc(number)}: text it to ${esc(number)} while you are on the call, use <b>Text everyone</b> on the room page, <code>groupcall text 4821 https://readm3.com/...</code>, MCP <code>text_room</code>, or ask riotcoder on the call. Reply STOP to stop getting them.</p>
+  <p><b>Group texts.</b> Share a link on a call (a readm3.com report, a PDF, anything) and everyone on the line gets it by text from ${esc(number)}: text it to ${esc(number)} while you are on the call, use <b>Text everyone</b> on the room page, <code>groupcall text 4821 https://readm3.com/...</code>, MCP <code>text_room</code>, or ask riotcoder on the call. Reply STOP to stop getting them. Optional: link your <a href="https://smshub.dev">smshub.dev</a> account on <a href="/me#smshub">your account page</a> (or <code>groupcall smshub &lt;key&gt;</code>) and your rooms' texts go out as smshub groups from your own number; if smshub cannot send, the room number is used.</p>
   <p><b>Webhooks.</b> Add a URL on <a href="/me#webhooks">your account</a> (or <code>groupcall webhook add</code>, MCP <code>create_webhook</code>, <code>POST /api/v1/webhooks</code>) and group.call POSTs <code>room.joined</code>, <code>room.left</code>, <code>transcript.line</code>, <code>text.sent</code>, <code>phone.called</code> and <code>recording.ready</code> to it as signed CloudEvents (Standard Webhooks, via <code>@profullstack/webhooks</code>).</p>
   <p>A room can also have a <b>greeter</b>: when somebody dials in before the host, riotcoder or cha0spunk joins, says hello, and keeps them company until the host arrives, then hands over and leaves. Set it on the room page (host = a phone number or a name on the line; blank means whoever joins next), with <code>groupcall greeter 4821 riotcoder 408-555-0101</code>, or MCP <code>set_greeter</code>.</p>
   <p>Your own agent can do the same from any telephony API (Telnyx, Twilio, ...). To have the room announce it by name, tell us the number it will call from, just before it dials:</p>
