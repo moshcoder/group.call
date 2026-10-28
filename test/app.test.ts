@@ -470,6 +470,47 @@ describe('calling someone in', () => {
   })
 })
 
+describe('calling someone in from the call', () => {
+  const press = async (event: (t: string, p: Record<string, unknown>) => Promise<unknown>, leg: string, keys: string) => {
+    for (const digit of keys) await event('call.dtmf.received', { call_control_id: leg, digit })
+  }
+
+  test('anyone on the line, an agent included, keys * number # and the room rings it, named after who asked', async () => {
+    const { call, event, telnyx, svc } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Standup' })).json()) as any
+    await event('call.initiated', { call_control_id: 'leg-a', direction: 'incoming', from: AGENT_CALLER })
+    await event('call.gather.ended', { call_control_id: 'leg-a', digits: room.code })
+    expect(telnyx.calls.some((c) => String(c.body.payload ?? '').includes('Press star to call someone in.'))).toBe(true)
+    const seen: string[] = []
+    svc.subscribe(room.code, (e) => seen.push(`${e.type}:${e.who}:${e.text}`))
+    await press(event, 'leg-a', '*4086562473#')
+    const placed = telnyx.calls.find((c) => c.path === '/calls')!
+    expect(placed.body).toMatchObject({ to: '+14086562473', from: DIAL_IN, connection_id: 'conn-gc' })
+    expect(telnyx.calls.at(-1)?.path).toBe('/calls/leg-a/actions/speak')
+    expect(telnyx.calls.at(-1)?.body.payload).toBe('Calling 4 0 8 6 5 6 2 4 7 3. They join when they pick up and press 1.')
+    expect(seen).toEqual(['invite:phone ending 73:is being called in by riotcoder'])
+    await event('call.answered', { call_control_id: 'out-1', direction: 'outgoing' })
+    expect(telnyx.calls.at(-1)?.body.payload).toContain('riotcoder is calling you into Standup. Press 1 to join.')
+  })
+
+  test("a room whose owner has no pass says so, and an overseas number is refused out loud", async () => {
+    const { call, event, telnyx } = setup()
+    const mine = (await (await call('gc_guest', 'POST', '/api/v1/rooms', { name: 'mine' })).json()) as any
+    await event('call.initiated', { call_control_id: 'leg-g', direction: 'incoming', from: '+15550001111' })
+    await event('call.gather.ended', { call_control_id: 'leg-g', digits: mine.code })
+    expect(telnyx.calls.some((c) => String(c.body.payload ?? '').includes('Press star'))).toBe(false)
+    await press(event, 'leg-g', '*4086562473#')
+    expect(telnyx.calls.at(-1)?.body.payload).toContain('comes with a room pass')
+
+    const ops = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
+    await event('call.initiated', { call_control_id: 'leg-o', direction: 'incoming', from: '+15550002222' })
+    await event('call.gather.ended', { call_control_id: 'leg-o', digits: ops.code })
+    await press(event, 'leg-o', '*442071234567#')
+    expect(telnyx.calls.at(-1)?.body.payload).toBe('Give a US or Canadian phone number.')
+    expect(telnyx.calls.some((c) => c.path === '/calls')).toBe(false)
+  })
+})
+
 describe('call minutes and credit codes', () => {
   test('a free account runs out, its room refuses callers, and a monthly credit code opens it again', async () => {
     const { call, event, store, svc, telnyx, guest } = setup()
@@ -559,5 +600,24 @@ describe('recording a room', () => {
     expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { sip: 'sip:x@evil.example', name: 'x' })).status).toBe(400)
     const guestRoom = (await (await call('gc_guest', 'POST', '/api/v1/rooms', { name: 'Mine' })).json()) as any
     expect((await call('gc_guest', 'POST', `/api/v1/rooms/${guestRoom.code}/call`, { sip: 'sip:+15106169327@sip.rtc.elevenlabs.io', name: 'x' })).status).toBe(403)
+  })
+})
+
+describe('the TUI', () => {
+  test('p keys a phone number to call in; q and c type nothing while keying, Esc gives up', async () => {
+    const { initialState, onKey } = await import('../src/tui.ts')
+    const s = initialState()
+    s.me = { rooms: [{ code: '4821' }], can_call_phones: true } as any
+    const k = (char: string, name = char) => onKey(s, { name, key: name, char })
+    k('p')
+    expect(s.dialing).toBe('')
+    for (const c of '408q656c2473') k(c)
+    expect(s.dialing).toBe('4086562473')
+    expect(onKey(s, { name: 'enter', key: 'enter' })).toBe('call-phone')
+    onKey(s, { name: 'escape', key: 'escape' })
+    expect(s.dialing).toBeNull()
+    s.me = { rooms: [{ code: '4821' }], can_call_phones: false } as any
+    k('p')
+    expect(s.dialing).toBeNull()
   })
 })
