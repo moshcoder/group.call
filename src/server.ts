@@ -20,6 +20,7 @@ import { RING_PLACEHOLDER, ringBar, startRingRefresh } from './ring.js'
 import { ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
 import { loadRoutes } from './routing.js'
 import { webhooksApi } from '@profullstack/webhooks'
+import { toolHandler } from '@profullstack/voice-agent'
 import { AGENTS, CODE_LENGTH, formatNumber, GroupCallService, hostLabel, newApiKey, telLink, UserError, type Config, type LiveEvent } from './service.js'
 import { VERSION } from './version.js'
 
@@ -753,6 +754,16 @@ export function createApp(deps: Deps) {
     const invite = svc.nextInvite()
     return invite ? c.json(invite) : c.body(null, 204)
   })
+  // Work our voice agents took on during calls: the worker hands each to the agent's task runner.
+  app.post('/api/v1/agent-queue/tasks/next', (c) => {
+    if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
+    const task = svc.nextTask()
+    return task ? c.json({ id: task.id, agent: task.agent, code: task.code, room_name: task.roomName, brief: task.brief, ack: task.ack, said: task.said, at: new Date(task.createdAt).toISOString() }) : c.body(null, 204)
+  })
+
+  // The tools our ElevenLabs voice agents call during a call (src/agents.ts).
+  const agentTools = toolHandler({ basePath: '/api/agent-tools', secret: config.agentToolSecret ?? '', tools: svc.agentTools(), log: (m) => console.log(m) })
+  app.post('/api/agent-tools/:tool', async (c) => (await agentTools(c.req.raw)) ?? c.json({ error: 'not found' }, 404))
   /** For an agent on a call: is anybody (a person) still in the room? */
   app.post('/api/v1/agent-queue/rooms/:code/text', async (c) => {
     if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
@@ -853,6 +864,14 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
           .map((pair) => pair.split('=').map((x) => x.trim()))
           .filter((kv): kv is [string, string] => kv.length === 2 && Boolean(kv[0]) && Boolean(kv[1])),
       ),
+      // riotcoder=sip:+1415...@sip.rtc.elevenlabs.io;transport=tcp,cha0spunk=...: split on the first = only.
+      agentSip: Object.fromEntries(
+        (env.GROUPCALL_AGENT_SIP ?? '')
+          .split(',')
+          .map((pair) => [pair.slice(0, pair.indexOf('=')).trim(), pair.slice(pair.indexOf('=') + 1).trim()] as [string, string])
+          .filter(([k, v]) => k && v.startsWith('sip')),
+      ),
+      ...(env.GROUPCALL_AGENT_TOOL_SECRET ? { agentToolSecret: env.GROUPCALL_AGENT_TOOL_SECRET } : {}),
       agentCallerIds: Object.fromEntries(
         (env.GROUPCALL_AGENT_CALLER_IDS ?? '')
           .split(',')

@@ -30,6 +30,9 @@ export type Line = { id: number; code: string; who: string; kind: 'person' | 'ag
 
 export type AgentInvite = { id: string; code: string; agent: string; sub: string; role: string; status: 'queued' | 'dialling' | 'done' | 'failed'; note: string; createdAt: number; updatedAt: number }
 
+/** Work an agent took on during a call, waiting for its task runner (riotcoder-qc and the like). */
+export type AgentTask = { id: string; agent: string; code: string; roomName: string; brief: string; ack: string; said: string; status: 'queued' | 'taken'; createdAt: number }
+
 export type Pass = { id: string; sub: string; amountCents: number; status: string; checkoutUrl: string; days: number; paidAt: number | null; createdAt: number }
 
 /** A call the room placed (a phone rung in): what it was estimated to cost a minute and, once Telnyx says, what it cost. */
@@ -176,6 +179,12 @@ export class Store {
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
     )`)
     this.db.exec('CREATE INDEX IF NOT EXISTS contacts_sub ON contacts(sub, name)')
+    // Work our voice agents took on during calls, until the worker hands it to their task runner.
+    this.db.exec(`CREATE TABLE IF NOT EXISTS agent_tasks (
+      id TEXT PRIMARY KEY, agent TEXT NOT NULL, code TEXT NOT NULL, room_name TEXT NOT NULL DEFAULT '',
+      brief TEXT NOT NULL, ack TEXT NOT NULL DEFAULT '', said TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'queued', created_at INTEGER NOT NULL, taken_at INTEGER
+    )`)
     // Group texts: every number a room has texted, and whether it said STOP.
     this.db.exec('CREATE TABLE IF NOT EXISTS sms_numbers (number TEXT PRIMARY KEY, opted_out INTEGER NOT NULL DEFAULT 0, first_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)')
     // Added later: an agent that waits in the room with early callers until the host arrives.
@@ -288,6 +297,20 @@ export class Store {
     this.db
       .query('INSERT INTO smshub_links (sub, key_sealed, from_number, relay, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(sub) DO UPDATE SET key_sealed = excluded.key_sealed, from_number = excluded.from_number, relay = excluded.relay, updated_at = excluded.updated_at')
       .run(sub, this.sealer.seal(link.key), link.from, link.relay ? 1 : 0, now)
+  }
+
+  // ---- agent tasks ---------------------------------------------------------
+
+  addTask(t: Pick<AgentTask, 'agent' | 'code' | 'roomName' | 'brief' | 'ack' | 'said'>, now = Date.now()): AgentTask {
+    const id = `tsk_${randomBytes(9).toString('base64url')}`
+    this.db.query('INSERT INTO agent_tasks (id, agent, code, room_name, brief, ack, said, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, t.agent, t.code, t.roomName, t.brief, t.ack, t.said, now)
+    return { ...t, id, status: 'queued', createdAt: now }
+  }
+
+  /** The oldest queued task, taken (once) by whoever asks. */
+  claimTask(now = Date.now()): AgentTask | null {
+    const r = this.db.query("UPDATE agent_tasks SET status = 'taken', taken_at = ? WHERE id = (SELECT id FROM agent_tasks WHERE status = 'queued' ORDER BY created_at LIMIT 1) RETURNING *").get(now) as any
+    return r ? { id: r.id, agent: r.agent, code: r.code, roomName: r.room_name, brief: r.brief, ack: r.ack, said: r.said, status: 'taken', createdAt: r.created_at } : null
   }
 
   // ---- the contacts book ---------------------------------------------------
@@ -566,7 +589,7 @@ export class Store {
     )
   }
 
-  finishInvite(id: string, status: 'done' | 'failed', note = '', now = Date.now()): void {
+  finishInvite(id: string, status: 'dialling' | 'done' | 'failed', note = '', now = Date.now()): void {
     this.db.query('UPDATE agent_invites SET status = ?, note = ?, updated_at = ? WHERE id = ?').run(status, note.slice(0, 300), now, id)
   }
 
