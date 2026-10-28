@@ -470,6 +470,81 @@ describe('calling someone in', () => {
   })
 })
 
+describe('least-cost routing', () => {
+  /** A Telnyx that refuses to place calls on the connections named. */
+  const refusing = (fetch: typeof globalThis.fetch, bad: string[]) =>
+    (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}'))
+      if (String(url).endsWith('/calls') && bad.includes(body.connection_id)) {
+        await fetch(url, init) // still recorded
+        return new Response('{"errors":[{"title":"Destination not allowed"}]}', { status: 422 })
+      }
+      return fetch(url, init)
+    }) as unknown as typeof globalThis.fetch
+
+  const routes = [
+    { provider: 'telnyx', connectionId: 'conn-us', rates: { '1': 0.007, '44': 0.02 } },
+    { provider: 'telnyx-intl', connectionId: 'conn-intl', from: '+442071230000', rates: { '44': 0.009, '447': 0.04, '1': 0.01 } },
+  ]
+
+  test('the default deck is the US and Canada: Caribbean +1 area codes and 900 numbers are refused', async () => {
+    const { call, telnyx } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
+    for (const phone of ['+18765551234', '+18095551234', '+19005551234']) {
+      const r = await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone })
+      expect(r.status).toBe(400)
+      expect(((await r.json()) as any).error).toContain('US or Canadian')
+    }
+    expect(telnyx.calls.some((c) => c.path === '/calls')).toBe(false)
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+16045551234' })).status).toBe(202)
+  })
+
+  test('a call goes out on the cheapest route for its prefix, with that route caller id', async () => {
+    const { call, telnyx } = setup({ routes })
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
+    const uk = (await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+44 20 7946 0000' })).json()) as any
+    expect(uk).toMatchObject({ ringing: true, via: 'telnyx-intl', rate: 0.009 })
+    expect(telnyx.calls.filter((c) => c.path === '/calls').at(-1)!.body).toMatchObject({ to: '+442079460000', from: '+442071230000', connection_id: 'conn-intl' })
+    // A UK mobile is dearer on the intl route (longest prefix wins there), so the US route carries it.
+    const mobile = (await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+447700900123' })).json()) as any
+    expect(mobile).toMatchObject({ via: 'telnyx', rate: 0.02 })
+    expect(telnyx.calls.filter((c) => c.path === '/calls').at(-1)!.body).toMatchObject({ from: DIAL_IN, connection_id: 'conn-us' })
+  })
+
+  test('a route that will not place the call hands over to the next cheapest', async () => {
+    const telnyx = telnyxRecorder()
+    const { call } = setup({ routes, fetch: refusing(telnyx.fetch, ['conn-intl']) })
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
+    const r = (await (await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+442079460000' })).json()) as any
+    expect(r).toMatchObject({ via: 'telnyx', rate: 0.02 })
+    expect(telnyx.calls.filter((c) => c.path === '/calls').map((c) => c.body.connection_id)).toEqual(['conn-intl', 'conn-us'])
+  })
+
+  test('nothing dearer than the cap is dialled, and an unrouted country is refused', async () => {
+    const { call, telnyx } = setup({ routes, maxRate: 0.015 })
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
+    const mobile = await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+447700900123' })
+    expect(mobile.status).toBe(400)
+    expect(((await mobile.json()) as any).error).toContain('does not call that country')
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+33142685300' })).status).toBe(400)
+    expect(telnyx.calls.some((c) => c.path === '/calls')).toBe(false)
+  })
+
+  test('rates quotes every route that carries a number, cheapest first', async () => {
+    const { call } = setup({ routes })
+    const r = (await (await call('gc_guest', 'GET', '/api/v1/rates?phone=%2B442079460000')).json()) as any
+    expect(r).toEqual({
+      to: '+442079460000',
+      max_rate: 0.05,
+      routes: [
+        { provider: 'telnyx-intl', prefix: '+44', usd_per_minute: 0.009 },
+        { provider: 'telnyx', prefix: '+44', usd_per_minute: 0.02 },
+      ],
+    })
+    expect((await call('gc_guest', 'GET', '/api/v1/rates?phone=%2B33142685300')).status).toBe(400)
+  })
+})
+
 describe('calling someone in from the call', () => {
   const press = async (event: (t: string, p: Record<string, unknown>) => Promise<unknown>, leg: string, keys: string) => {
     for (const digit of keys) await event('call.dtmf.received', { call_control_id: leg, digit })

@@ -86,8 +86,12 @@ export class GroupCallClient {
     return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/expect`, { name, from })
   }
   /** Ring a phone into the room: whoever answers presses 1 and is in. */
-  callPhone(code: string, phone: string, name?: string): Promise<{ ringing: boolean; to: string }> {
+  callPhone(code: string, phone: string, name?: string): Promise<{ ringing: boolean; to: string; via: string; rate: number }> {
     return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/call`, { phone, ...(name ? { name } : {}) })
+  }
+  /** What ringing a number in costs: the routes that carry it, cheapest first. */
+  rates(phone: string): Promise<{ to: string; max_rate: number; routes: { provider: string; prefix: string; usd_per_minute: number }[] }> {
+    return this.call('GET', `/api/v1/rates?phone=${encodeURIComponent(phone)}`)
   }
   /** A new single-use invite link (you have a few). */
   newInvite(note?: string): Promise<{ link: string; code: string; expires_at: string | null; left: number }> {

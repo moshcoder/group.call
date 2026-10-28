@@ -366,7 +366,7 @@ export function helpPage(ctx: Ctx): string {
 <section>
   <h2>Joining</h2>
   <p>Call <a href="tel:${esc(ctx.dialIn)}">${esc(number)}</a> and key the room's ${CODE_LENGTH}-digit code when asked. If you key it before the prompt finishes, that is fine. A wrong code gets three tries.</p>
-  <p>Or have the room call you: on a room's page, <b>Call someone in</b> rings any US or Canadian number from ${esc(number)}. Pick up, press 1, and you are in. From the call itself, anyone on the line (a person or an agent) presses <b>*</b>, the number, then <b>#</b>, and it rings them the same way; <b>*</b> again cancels. That comes with a room pass.</p>
+  <p>Or have the room call you: on a room's page, <b>Call someone in</b> rings any US or Canadian number from ${esc(number)} (and any other country this instance routes; each call goes out on the cheapest route that carries it). Pick up, press 1, and you are in. From the call itself, anyone on the line (a person or an agent) presses <b>*</b>, the number, then <b>#</b>, and it rings them the same way; <b>*</b> again cancels. That comes with a room pass.</p>
   <p>On a phone, a room's page has a link that dials and keys the code for you (<code>tel:${esc(ctx.dialIn)},,,4821#</code>).</p>
 </section>
 <section>
@@ -394,7 +394,8 @@ export function helpPage(ctx: Ctx): string {
     <tr><td><code>DELETE /api/v1/rooms/:code</code></td><td>hangs everyone up and frees the code</td></tr>
     <tr><td><code>POST /api/v1/rooms/:code/say</code></td><td><code>{"text", "as"?}</code>: read aloud into the room</td></tr>
     <tr><td><code>POST /api/v1/rooms/:code/expect</code></td><td><code>{"name", "from"}</code>: name the next caller from that number</td></tr>
-    <tr><td><code>POST /api/v1/rooms/:code/call</code></td><td><code>{"phone", "name"?}</code>: ring a phone into the room; they press 1 to join (pass)</td></tr>
+    <tr><td><code>POST /api/v1/rooms/:code/call</code></td><td><code>{"phone", "name"?}</code>: ring a phone into the room; they press 1 to join (pass). Answers with the route used (<code>via</code>) and its <code>rate</code> a minute</td></tr>
+    <tr><td><code>GET /api/v1/rates?phone=</code></td><td>what a minute to that number costs on every route that carries it, cheapest first (least-cost routing)</td></tr>
     <tr><td><code>POST /api/v1/rooms/:code/agents</code></td><td><code>{"agent"}</code>: ask riotcoder or cha0spunk in (operators)</td></tr>
     <tr><td><code>GET /r/:code/live</code></td><td>server-sent events as people come and go (signed in)</td></tr>
   </table>

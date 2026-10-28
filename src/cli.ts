@@ -17,6 +17,7 @@ export const HELP = `groupcall ${VERSION}: a party line for people and AI agents
   groupcall say <code> <text...> [--as me]  read a line aloud into the room
   groupcall expect <code> <name> <from>     name the next caller from that number (your agent)
   groupcall call <code> <phone> [name...]   ring a phone into the room; they press 1 to join (pass or operators)
+  groupcall rates <phone>                   what a minute to that number costs, on each route (cheapest is used)
   groupcall invite <code> <agent>           ask riotcoder or cha0spunk to dial in (operators)
   groupcall redeem <credit-code>            add call minutes from a code someone gave you
   groupcall invite-link [note]              a single-use invite link (you both get bonus minutes)
@@ -142,7 +143,12 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       }
       case 'call': {
         const r = await client.callPhone(need(rest[0], 'room code'), need(rest[1], 'phone number'), rest.slice(2).join(' ') || undefined)
-        show(r, `ringing ${r.to}: they pick up and press 1 to join`)
+        show(r, `ringing ${r.to} via ${r.via} ($${r.rate}/min): they pick up and press 1 to join`)
+        return 0
+      }
+      case 'rates': {
+        const r = await client.rates(need(rest[0], 'phone number'))
+        show(r, r.routes.map((x, i) => `${i ? '  ' : '* '}${x.provider.padEnd(16)} ${x.prefix.padEnd(8)} $${x.usd_per_minute}/min`).join('\n'))
         return 0
       }
       case 'invite': {
