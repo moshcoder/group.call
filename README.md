@@ -62,12 +62,24 @@ Phones a room rings go out on the cheapest route that carries the number
 ([least-cost routing](https://en.wikipedia.org/wiki/Least-cost_routing)), see `src/routing.ts`.
 A route is a Telnyx call-control app (tied to an outbound voice profile) with a rate deck:
 destination prefix to USD a minute, longest prefix wins. If a route will not place the call,
-the next cheapest is tried. A prefix priced `null` (or `-` in a CSV deck) is blocked, and
-nothing above the cap (`GROUPCALL_MAX_RATE`, default $0.05/min) is ever dialled.
+the next cheapest is tried. A prefix priced `null` (or `-` in a CSV deck) is blocked, the empty
+prefix `""` prices everything else, and nothing above `GROUPCALL_MAX_RATE` (default $1/min) is
+ever dialled.
 
-With only `TELNYX_CONNECTION_ID` set there is one route covering the US and Canada at $0.007/min,
-with Caribbean/Atlantic/Pacific `+1` area codes and premium 900/976 blocked. To add providers or
-countries, point `GROUPCALL_ROUTES` at a JSON file:
+With only `TELNYX_CONNECTION_ID` set there is one route to every country: the US and Canada at
+$0.007/min, everywhere else (Caribbean `+1` area codes included) estimated at $0.25/min, premium
+900/976 blocked. Telnyx's `call.cost` webhook (turn on `call_cost_in_webhooks` on the call-control
+app) says what each call really cost; that rate is learned per route and number prefix and beats
+the deck from then on.
+
+**Daily budget.** Every call the instance places (phones and SIP agents, all rooms together) may
+cost `GROUPCALL_DAILY_SPEND_USD` a UTC day, default $5. Spend = Telnyx's figure for priced calls
+plus minutes so far x rate for the rest. At the cap new calls are refused (429) and a watchdog
+hangs up running ones within 15 s. Back it with the same limit on the Telnyx side: the group.call
+app has its own outbound voice profile with a $5 daily spend limit, so a bug here still cannot
+drain the account.
+
+To add providers or prices, point `GROUPCALL_ROUTES` at a JSON file:
 
 ```json
 {

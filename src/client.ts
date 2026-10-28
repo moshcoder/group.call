@@ -90,7 +90,7 @@ export class GroupCallClient {
     return this.call('POST', `/api/v1/rooms/${encodeURIComponent(code)}/call`, { phone, ...(name ? { name } : {}) })
   }
   /** What ringing a number in costs: the routes that carry it, cheapest first. */
-  rates(phone: string): Promise<{ to: string; max_rate: number; routes: { provider: string; prefix: string; usd_per_minute: number }[] }> {
+  rates(phone: string): Promise<{ to: string; max_rate: number; daily_cap_usd: number; spent_today_usd: number; routes: { provider: string; prefix: string; usd_per_minute: number }[] }> {
     return this.call('GET', `/api/v1/rates?phone=${encodeURIComponent(phone)}`)
   }
   /** A new single-use invite link (you have a few). */

@@ -553,7 +553,7 @@ export function createApp(deps: Deps) {
     '/api/v1/rates',
     api((c) => {
       const q = svc.quote(c.req.query('phone') ?? '')
-      return c.json({ to: q.to, max_rate: svc.router.maxRate, routes: q.choices.map((r) => ({ provider: r.provider, prefix: `+${r.prefix}`, usd_per_minute: r.rate })) })
+      return c.json({ to: q.to, max_rate: svc.router.maxRate, daily_cap_usd: svc.dailyCap, spent_today_usd: svc.spentToday(), routes: q.choices.map((r) => ({ provider: r.provider, prefix: `+${r.prefix}`, usd_per_minute: r.rate })) })
     }),
   )
   app.post(
@@ -690,6 +690,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       dialIn: env.GROUPCALL_DIAL_IN!,
       ...(env.TELNYX_CONNECTION_ID ? { telnyxConnectionId: env.TELNYX_CONNECTION_ID } : {}),
       ...(routesFile ? { routes: routesFile.routes } : {}),
+      ...(env.GROUPCALL_DAILY_SPEND_USD ? { dailySpendUsd: Number(env.GROUPCALL_DAILY_SPEND_USD) } : {}),
       ...(env.GROUPCALL_MAX_RATE ? { maxRate: Number(env.GROUPCALL_MAX_RATE) } : routesFile?.maxRate !== undefined ? { maxRate: routesFile.maxRate } : {}),
       ...(env.GROUPCALL_VOICE ? { voice: env.GROUPCALL_VOICE } : {}),
       ...(env.GROUPCALL_VOICE_KEY_REF ? { telnyxVoiceKeyRef: env.GROUPCALL_VOICE_KEY_REF } : {}),
