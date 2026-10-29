@@ -12,6 +12,7 @@ import { Credits, sqliteStore } from '@profullstack/redeem-credits'
 import { Affiliates, sqliteStore as affiliateStore } from '@profullstack/affiliates'
 import { GroupCall, newRoomCode, normalNumber, type Participant, type TelnyxEvent } from '@profullstack/group-call'
 import type { AgentInvite, Line, Pass, Room, RoomEvent, Store, User } from './db.js'
+import { LiveBroadcastRelay } from './live-broadcast.js'
 
 export class UserError extends Error {
   constructor(
@@ -59,6 +60,8 @@ export type Config = {
   freeMinutes?: number
   /** Transcribe every leg (Telnyx, per minute per leg). On by default. */
   transcribe?: boolean
+  /** Fork Riotcoder's mixed call audio to a receive-only live relay. */
+  broadcast?: { streamUrl: string; nixampUrl: string; nixampToken: string; name?: string }
   origin?: string
   fetch?: typeof fetch
 }
@@ -115,6 +118,7 @@ export class GroupCallService {
   private readonly listeners = new Map<string, Set<(e: LiveEvent) => void>>()
   private readonly store: Store
   readonly config: Config
+  readonly broadcastRelay: LiveBroadcastRelay | null
   private readonly agentNumbers: Record<string, string>
   /** Phones a room rang, by number, with the name the owner gave them. */
   private readonly calledIn = new Map<string, string>()
@@ -123,6 +127,7 @@ export class GroupCallService {
     this.store = store
     this.config = config
     this.agentNumbers = config.agentCallerIds ?? {}
+    this.broadcastRelay = config.broadcast ? new LiveBroadcastRelay(config.broadcast) : null
     this.credits = new Credits(sqliteStore(store.db as never))
     this.affiliates = new Affiliates(affiliateStore(store.db as never), { defaultQuota: INVITES_PER_PERSON })
     this.line =
@@ -156,6 +161,9 @@ export class GroupCallService {
                   if (p.leg !== who.leg && shownParticipant(p, this.agentNumbers, this.config.knownCallers, this.calledIn).name === shown.name) void this.line?.kick(code, p.leg)
                 }
               }
+              if (shown.name === 'riotcoder' && this.broadcastRelay && this.config.telnyxApiKey) {
+                void this.startBroadcast(code, who.leg)
+              }
             },
             onLeave: (code, who, info) => {
               store.dropLeg(code, who.leg, info.callers === 0)
@@ -172,6 +180,30 @@ export class GroupCallService {
             onEvent: (line) => console.log(line),
           })
         : null
+  }
+
+  private async startBroadcast(code: string, leg: string): Promise<void> {
+    const relay = this.broadcastRelay
+    const apiKey = this.config.telnyxApiKey
+    if (!relay || !apiKey) return
+    try {
+      const response = await (this.config.fetch ?? fetch)(`https://api.telnyx.com/v2/calls/${encodeURIComponent(leg)}/actions/streaming_start`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          stream_url: relay.streamUrl,
+          stream_track: 'both_tracks',
+          client_state: Buffer.from(JSON.stringify({ room: code, leg })).toString('base64url'),
+        }),
+      })
+      if (!response.ok) {
+        console.error(`group.call: broadcast stream start failed (${response.status})`)
+        return
+      }
+      console.log(`group.call: broadcasting room ${code} through Riotcoder's receive-only leg`)
+    } catch (error) {
+      console.error(`group.call: broadcast stream start failed: ${(error as Error).message}`)
+    }
   }
 
   private record(code: string, kind: 'join' | 'leave', who: Participant, callers: number): void {

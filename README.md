@@ -39,6 +39,15 @@ ElevenLabs voices through Telnyx and hears the room through Telnyx transcription
 else's agent can do the same from any telephony API, after naming itself with
 `POST /api/v1/rooms/:code/expect`.
 
+## Live broadcast relay
+
+Set `GROUPCALL_BROADCAST_NIXAMP_URL` and `GROUPCALL_BROADCAST_NIXAMP_TOKEN` on the
+server to enable a receive-only live broadcast. When Riotcoder joins a room, Telnyx
+forks both audio tracks to `/api/v1/broadcast/stream`; group.call mixes and encodes
+them as MP3 and keeps Nixamp's `/api/ingest` request open until the call ends.
+`GROUPCALL_BROADCAST_STREAM_URL` overrides the public WebSocket URL when the service
+is behind a proxy. The relay is disabled unless both Nixamp settings are present.
+
 Sign-in is CoinPay OAuth only. Rooms: 3 free. A room pass costs $5 for 30 days and gives
 50 rooms and codes you choose, paid through a CoinPay hosted checkout.
 
