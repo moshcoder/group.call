@@ -233,6 +233,12 @@ export class GroupCallService {
             },
             onInvite: (code, who, digits) => this.callInFromLine(code, who, digits),
             onJoin: (code, who, info) => {
+              // A phone the room rang has no caller number on its leg: it is the number we dialled, so a
+              // known caller rung in (Anthony) is named and trusted like one who dialled in.
+              if (!who.from) {
+                const dialled = store.dialled(who.leg)
+                if (dialled?.to.startsWith('+')) who.from = dialled.to
+              }
               if (info.conferenceId) store.saveLeg(code, info.conferenceId, info.startedAt, who)
               if (info.conferenceId && store.room(code)?.record) void this.startRecording(code, info.conferenceId)
               this.record(code, 'join', who, info.callers)

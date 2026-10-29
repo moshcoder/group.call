@@ -472,6 +472,15 @@ describe('calling someone in', () => {
     expect(svc.live(room.code)).toEqual([expect.objectContaining({ name: 'Anthony', kind: 'person' })])
   })
 
+  test('a known caller the room rang in is named and trusted, though the leg carries no caller number', async () => {
+    const { call, event, svc } = setup({ knownCallers: { '+14086562473': 'Anthony' } })
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Standup' })).json()) as any
+    await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '408-656-2473' })
+    await event('call.answered', { call_control_id: 'out-1', direction: 'outgoing' })
+    await event('call.gather.ended', { call_control_id: 'out-1', digits: '1' })
+    expect(svc.live(room.code)).toEqual([expect.objectContaining({ name: 'Anthony', kind: 'person', trusted: true })])
+  })
+
   test('a free account cannot ring phones, and nobody can ring premium lines or our own', async () => {
     const { call, telnyx } = setup()
     const mine = (await (await call('gc_guest', 'POST', '/api/v1/rooms', { name: 'mine' })).json()) as any
