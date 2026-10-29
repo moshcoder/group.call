@@ -81,6 +81,15 @@ an exact-name nginx vhost with a cert from `pit-proxy-cert`. Deploy:
 `ssh root@dev2 'cd /opt/group.call && git pull && ./bin/install.sh'`. Settings are in
 `bin/install.conf`; secrets go in `~/.local/share/group-call/app.env` from the vault.
 
+### Live Nixamp broadcast
+
+Set `GROUPCALL_BROADCAST_NIXAMP_URL` and `GROUPCALL_BROADCAST_NIXAMP_TOKEN` to enable
+a receive-only live broadcast. When Riotcoder joins a room, Telnyx forks both audio
+tracks to `/api/v1/broadcast/stream`; group.call mixes and encodes them as MP3 and
+keeps Nixamp's `/api/ingest` request open until the call ends. Set
+`GROUPCALL_BROADCAST_STREAM_URL` when the public WebSocket URL differs from the
+group.call origin. The relay stays disabled unless both Nixamp settings are present.
+
 ### Least-cost routing
 
 Phones a room rings go out on the cheapest route that carries the number

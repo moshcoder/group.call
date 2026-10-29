@@ -885,6 +885,15 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ...(env.GROUPCALL_SIP_HOSTS ? { sipHosts: list(env.GROUPCALL_SIP_HOSTS) } : {}),
       ...(env.GROUPCALL_MESSAGING_PROFILE_ID ? { messagingProfileId: env.GROUPCALL_MESSAGING_PROFILE_ID } : {}),
       ...(env.GROUPCALL_SMSHUB_URL ? { smshubUrl: env.GROUPCALL_SMSHUB_URL } : {}),
+      ...(env.GROUPCALL_BROADCAST_NIXAMP_URL && env.GROUPCALL_BROADCAST_NIXAMP_TOKEN
+        ? { broadcast: {
+            streamUrl: env.GROUPCALL_BROADCAST_STREAM_URL
+              ?? `${(env.GROUPCALL_ORIGIN ?? SITE).replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/api/v1/broadcast/stream`,
+            nixampUrl: env.GROUPCALL_BROADCAST_NIXAMP_URL,
+            nixampToken: env.GROUPCALL_BROADCAST_NIXAMP_TOKEN,
+            name: env.GROUPCALL_BROADCAST_NAME ?? 'TUI Weekly live',
+          } }
+        : {}),
     },
   })
   const trustProxy = (env.GROUPCALL_TRUST_PROXY ?? '1') === '1'
@@ -898,17 +907,29 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
   startRingRefresh()
   startPitFooterRefresh(SELF)
   startRingFooterRefresh()
-  return Bun.serve({
+  let server: ReturnType<typeof Bun.serve>
+  server = Bun.serve({
     port: options.port ?? Number(env.PORT ?? 8810),
     hostname: options.hostname ?? env.HOST ?? '127.0.0.1',
     // Server-sent events stay open; Bun's idle timeout tops out at 255 s and the ping is every 25.
     idleTimeout: 255,
     fetch(request, srv) {
+      if (new URL(request.url).pathname === '/api/v1/broadcast/stream' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+        if (!svc.broadcastRelay) return new Response('live broadcast is not configured', { status: 404 })
+        if (server.upgrade(request, { data: {} })) return undefined
+        return new Response('websocket upgrade failed', { status: 400 })
+      }
       const peer = srv.requestIP(request)?.address ?? ''
       const forwarded = trustProxy && (peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1') ? request.headers.get('x-real-ip') : null
       return app.fetch(request, { ip: forwarded || peer })
     },
+    websocket: {
+      open: (socket) => svc.broadcastRelay?.accept(socket),
+      message: (socket, message) => void svc.broadcastRelay?.message(message as string | Buffer),
+      close: () => svc.broadcastRelay?.close(),
+    },
   })
+  return server
 }
 
 if (import.meta.main) {

@@ -18,6 +18,7 @@ import { Webhooks, sqliteStore as webhookStore, type GuardOptions } from '@profu
 import { matchNames, spokenInvite, splitNames, type Contact } from './contacts.js'
 import { callHeaders } from './agents.js'
 import type { ToolFn } from '@profullstack/voice-agent'
+import { LiveBroadcastRelay } from './live-broadcast.js'
 
 export class UserError extends Error {
   constructor(
@@ -92,6 +93,8 @@ export type Config = {
   transcribe?: boolean
   /** Where finished recordings are kept as mp3; without it, rooms cannot record. */
   recordingsDir?: string
+  /** Fork Riotcoder's mixed call audio to a receive-only live relay. */
+  broadcast?: { streamUrl: string; nixampUrl: string; nixampToken: string; name?: string }
   /** SIP hosts an operator may dial a voice agent in from (ElevenLabs by default). */
   sipHosts?: string[]
   /** Where smshub.dev lives, for accounts that send their group texts through it. */
@@ -184,6 +187,7 @@ export class GroupCallService {
   private readonly listeners = new Map<string, Set<(e: LiveEvent) => void>>()
   private readonly store: Store
   readonly config: Config
+  readonly broadcastRelay: LiveBroadcastRelay | null
   private readonly agentNumbers: Record<string, string>
   /** Customer webhooks (@profullstack/webhooks): endpoints per account, durable delivery. */
   readonly hooks: Webhooks
@@ -201,6 +205,7 @@ export class GroupCallService {
     const routes = config.routes?.length ? config.routes : config.telnyxConnectionId ? [{ provider: 'telnyx', connectionId: config.telnyxConnectionId, rates: defaultDeck() }] : []
     this.router = new Router(routes, config.maxRate)
     this.agentNumbers = config.agentCallerIds ?? {}
+    this.broadcastRelay = config.broadcast ? new LiveBroadcastRelay(config.broadcast) : null
     this.credits = new Credits(sqliteStore(store.db as never))
     this.affiliates = new Affiliates(affiliateStore(store.db as never), { defaultQuota: INVITES_PER_PERSON })
     this.hooks = new Webhooks({
@@ -252,6 +257,7 @@ export class GroupCallService {
                   if (p.leg !== who.leg && shownParticipant(p, this.agentNumbers, this.config.knownCallers, this.calledIn).name === shown.name) void this.line?.kick(code, p.leg)
                 }
               }
+              if (shown.name === 'riotcoder' && this.broadcastRelay && this.config.telnyxApiKey) void this.startBroadcast(code, who.leg)
             },
             onLeave: (code, who, info) => {
               store.dropLeg(code, who.leg, info.callers === 0)
@@ -273,6 +279,21 @@ export class GroupCallService {
     if (config.recordingsDir) mkdirSync(config.recordingsDir, { recursive: true })
     // The day's spend is checked before every call, and again here while calls run.
     if (this.line) setInterval(() => void this.enforceBudget().catch((e) => console.error('group.call: budget:', e)), 15_000).unref()
+  }
+
+  private async startBroadcast(code: string, leg: string): Promise<void> {
+    const relay = this.broadcastRelay
+    const apiKey = this.config.telnyxApiKey
+    if (!relay || !apiKey) return
+    try {
+      const response = await (this.config.fetch ?? fetch)(`https://api.telnyx.com/v2/calls/${encodeURIComponent(leg)}/actions/streaming_start`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ stream_url: relay.streamUrl, stream_track: 'both_tracks', client_state: Buffer.from(JSON.stringify({ room: code, leg })).toString('base64url') }),
+      })
+      if (!response.ok) console.error(`group.call: broadcast stream start failed (${response.status})`)
+      else console.log(`group.call: broadcasting room ${code} through Riotcoder's receive-only leg`)
+    } catch (error) { console.error(`group.call: broadcast stream start failed: ${(error as Error).message}`) }
   }
 
   // ---- what calls out cost -------------------------------------------------
