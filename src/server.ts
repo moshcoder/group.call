@@ -885,12 +885,13 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ...(env.GROUPCALL_SIP_HOSTS ? { sipHosts: list(env.GROUPCALL_SIP_HOSTS) } : {}),
       ...(env.GROUPCALL_MESSAGING_PROFILE_ID ? { messagingProfileId: env.GROUPCALL_MESSAGING_PROFILE_ID } : {}),
       ...(env.GROUPCALL_SMSHUB_URL ? { smshubUrl: env.GROUPCALL_SMSHUB_URL } : {}),
-      ...(env.GROUPCALL_BROADCAST_NIXAMP_URL && env.GROUPCALL_BROADCAST_NIXAMP_TOKEN
+      ...(env.GROUPCALL_BROADCAST_NIXAMP_URL && (env.GROUPCALL_BROADCAST_NIXAMP_KEY || env.GROUPCALL_BROADCAST_NIXAMP_TOKEN)
         ? { broadcast: {
             streamUrl: env.GROUPCALL_BROADCAST_STREAM_URL
               ?? `${(env.GROUPCALL_ORIGIN ?? SITE).replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/api/v1/broadcast/stream`,
             nixampUrl: env.GROUPCALL_BROADCAST_NIXAMP_URL,
-            nixampToken: env.GROUPCALL_BROADCAST_NIXAMP_TOKEN,
+            ...(env.GROUPCALL_BROADCAST_NIXAMP_KEY ? { nixampKey: env.GROUPCALL_BROADCAST_NIXAMP_KEY } : {}),
+            ...(env.GROUPCALL_BROADCAST_NIXAMP_TOKEN ? { nixampToken: env.GROUPCALL_BROADCAST_NIXAMP_TOKEN } : {}),
             name: env.GROUPCALL_BROADCAST_NAME ?? 'TUI Weekly live',
           } }
         : {}),

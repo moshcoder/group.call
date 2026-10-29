@@ -94,7 +94,7 @@ export type Config = {
   /** Where finished recordings are kept as mp3; without it, rooms cannot record. */
   recordingsDir?: string
   /** Fork Riotcoder's mixed call audio to a receive-only live relay. */
-  broadcast?: { streamUrl: string; nixampUrl: string; nixampToken: string; name?: string }
+  broadcast?: { streamUrl: string; nixampUrl: string; nixampToken?: string; nixampKey?: string; name?: string }
   /** SIP hosts an operator may dial a voice agent in from (ElevenLabs by default). */
   sipHosts?: string[]
   /** Where smshub.dev lives, for accounts that send their group texts through it. */
@@ -117,6 +117,14 @@ export const AGENTS: Record<string, { about: string; voice: string; aliases: str
 export const MAX_CONTACTS = 500
 /** Most names one invite may ask for. */
 export const MAX_INVITE_NAMES = 8
+
+/** Only the two shows requested here are eligible for automatic live relay. */
+export function podcastBroadcastName(roomName: string): 'TUI Weekly' | 'Off The Record' | null {
+  const normalized = roomName.toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (normalized.includes('tuiweekly')) return 'TUI Weekly'
+  if (normalized.includes('offtherecord')) return 'Off The Record'
+  return null
+}
 
 /** What happened to one name in an invite. */
 export type InviteResult = { name: string; heard: string; status: 'invited' | 'calling' | 'here' | 'unknown' | 'ambiguous' | 'failed'; how?: 'agent' | 'sip' | 'phone'; message: string }
@@ -257,7 +265,8 @@ export class GroupCallService {
                   if (p.leg !== who.leg && shownParticipant(p, this.agentNumbers, this.config.knownCallers, this.calledIn).name === shown.name) void this.line?.kick(code, p.leg)
                 }
               }
-              if (shown.name === 'riotcoder' && this.broadcastRelay && this.config.telnyxApiKey) void this.startBroadcast(code, who.leg)
+              const podcast = this.broadcastRelay && shown.name === 'riotcoder' ? podcastBroadcastName(store.room(code)?.name ?? '') : null
+              if (podcast && this.config.telnyxApiKey) void this.startBroadcast(code, who.leg, podcast)
             },
             onLeave: (code, who, info) => {
               store.dropLeg(code, who.leg, info.callers === 0)
@@ -281,7 +290,7 @@ export class GroupCallService {
     if (this.line) setInterval(() => void this.enforceBudget().catch((e) => console.error('group.call: budget:', e)), 15_000).unref()
   }
 
-  private async startBroadcast(code: string, leg: string): Promise<void> {
+  private async startBroadcast(code: string, leg: string, podcast: 'TUI Weekly' | 'Off The Record'): Promise<void> {
     const relay = this.broadcastRelay
     const apiKey = this.config.telnyxApiKey
     if (!relay || !apiKey) return
@@ -289,10 +298,10 @@ export class GroupCallService {
       const response = await (this.config.fetch ?? fetch)(`https://api.telnyx.com/v2/calls/${encodeURIComponent(leg)}/actions/streaming_start`, {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ stream_url: relay.streamUrl, stream_track: 'both_tracks', client_state: Buffer.from(JSON.stringify({ room: code, leg })).toString('base64url') }),
+        body: JSON.stringify({ stream_url: relay.streamUrl, stream_track: 'both_tracks', client_state: Buffer.from(JSON.stringify({ room: code, leg, podcast })).toString('base64url') }),
       })
       if (!response.ok) console.error(`group.call: broadcast stream start failed (${response.status})`)
-      else console.log(`group.call: broadcasting room ${code} through Riotcoder's receive-only leg`)
+      else console.log(`group.call: broadcasting ${podcast} room ${code} through Riotcoder's receive-only leg`)
     } catch (error) { console.error(`group.call: broadcast stream start failed: ${(error as Error).message}`) }
   }
 

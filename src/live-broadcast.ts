@@ -1,5 +1,5 @@
 /** Receive-only Telnyx media fork -> Nixamp live ingest. */
-type BroadcastOptions = { streamUrl: string; nixampUrl: string; nixampToken: string; name?: string }
+type BroadcastOptions = { streamUrl: string; nixampUrl: string; nixampToken?: string; nixampKey?: string; name?: string }
 type Socket = { send: (data: string) => void; close: () => void }
 type Ffmpeg = { stdin: { write: (data: Uint8Array) => void; end: () => void }; stdout: AsyncIterable<Uint8Array>; kill: () => void }
 const clamp = (value: number) => Math.max(-32768, Math.min(32767, value))
@@ -45,14 +45,25 @@ export class LiveBroadcastRelay {
   private upload: Promise<Response> | null = null
   private tracks = new Map<string, Buffer[]>()
   private format = 'PCMU'
+  private name: string
 
-  constructor(options: BroadcastOptions) { this.options = options; this.streamUrl = options.streamUrl }
+  constructor(options: BroadcastOptions) { this.options = options; this.streamUrl = options.streamUrl; this.name = options.name ?? 'TUI Weekly live' }
   accept(socket: Socket): void { this.stop(); this.socket = socket }
 
   async message(raw: string | Buffer): Promise<void> {
     let frame: any
     try { frame = JSON.parse(typeof raw === 'string' ? raw : raw.toString('utf8')) } catch { return }
-    if (frame.event === 'start') { this.format = String(frame.start?.media_format?.encoding ?? 'PCMU').toUpperCase(); await this.startEncoder(); return }
+    if (frame.event === 'start') {
+      this.format = String(frame.start?.media_format?.encoding ?? 'PCMU').toUpperCase()
+      const state = frame.start?.client_state ?? frame.client_state
+      if (typeof state === 'string') {
+        try {
+          const clientState = JSON.parse(Buffer.from(state, 'base64url').toString('utf8')) as { podcast?: unknown }
+          if (clientState.podcast === 'TUI Weekly' || clientState.podcast === 'Off The Record') this.name = `${clientState.podcast} live`
+        } catch {}
+      }
+      await this.startEncoder(); return
+    }
     if (frame.event === 'media') {
       const payload = frame.media?.payload
       if (typeof payload !== 'string' || !this.ffmpeg) return
@@ -78,8 +89,11 @@ export class LiveBroadcastRelay {
       },
     })
     const url = new URL('/api/ingest', this.options.nixampUrl)
-    url.searchParams.set('format', 'mp3'); url.searchParams.set('name', this.options.name ?? 'TUI Weekly live')
-    this.upload = fetch(url, { method: 'POST', headers: { authorization: `Bearer ${this.options.nixampToken}`, 'content-type': 'audio/mpeg' }, body, duplex: 'half' } as RequestInit).catch((error) => {
+    url.searchParams.set('format', 'mp3'); url.searchParams.set('name', this.name)
+    const headers = new Headers({ 'content-type': 'audio/mpeg' })
+    if (this.options.nixampKey) headers.set('x-nixamp-key', this.options.nixampKey)
+    else if (this.options.nixampToken) headers.set('authorization', `Bearer ${this.options.nixampToken}`)
+    this.upload = fetch(url, { method: 'POST', headers, body, duplex: 'half' } as RequestInit).catch((error) => {
       console.error(`group.call: Nixamp broadcast failed: ${(error as Error).message}`); return new Response(null, { status: 502 })
     })
     void this.upload.then((response) => { if (!response.ok) console.error(`group.call: Nixamp ingest returned ${response.status}`) })
