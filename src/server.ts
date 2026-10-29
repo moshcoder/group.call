@@ -824,6 +824,12 @@ export function createApp(deps: Deps) {
 export function serve(options: { port?: number; hostname?: string } = {}) {
   const env = process.env
   const key = env.GROUPCALL_KEY ?? ''
+  const broadcastStreamKey = env.GROUPCALL_BROADCAST_STREAM_KEY ?? ''
+  const broadcastStreamUrl = new URL(
+    env.GROUPCALL_BROADCAST_STREAM_URL
+      ?? `${(env.GROUPCALL_ORIGIN ?? SITE).replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/api/v1/broadcast/stream`,
+  )
+  if (broadcastStreamKey) broadcastStreamUrl.searchParams.set('key', broadcastStreamKey)
   const store = new Store(env.GROUPCALL_DB ?? `${env.HOME}/.local/share/group-call/group-call.db`, new Sealer(key))
   for (const name of ['GROUPCALL_COINPAY_CLIENT_ID', 'GROUPCALL_DIAL_IN']) {
     if (!env[name]) throw new Error(`${name} must be set`)
@@ -885,10 +891,9 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ...(env.GROUPCALL_SIP_HOSTS ? { sipHosts: list(env.GROUPCALL_SIP_HOSTS) } : {}),
       ...(env.GROUPCALL_MESSAGING_PROFILE_ID ? { messagingProfileId: env.GROUPCALL_MESSAGING_PROFILE_ID } : {}),
       ...(env.GROUPCALL_SMSHUB_URL ? { smshubUrl: env.GROUPCALL_SMSHUB_URL } : {}),
-      ...(env.GROUPCALL_BROADCAST_NIXAMP_URL && (env.GROUPCALL_BROADCAST_NIXAMP_KEY || env.GROUPCALL_BROADCAST_NIXAMP_TOKEN)
+      ...(broadcastStreamKey && env.GROUPCALL_BROADCAST_NIXAMP_URL && (env.GROUPCALL_BROADCAST_NIXAMP_KEY || env.GROUPCALL_BROADCAST_NIXAMP_TOKEN)
         ? { broadcast: {
-            streamUrl: env.GROUPCALL_BROADCAST_STREAM_URL
-              ?? `${(env.GROUPCALL_ORIGIN ?? SITE).replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/api/v1/broadcast/stream`,
+            streamUrl: broadcastStreamUrl.toString(),
             nixampUrl: env.GROUPCALL_BROADCAST_NIXAMP_URL,
             ...(env.GROUPCALL_BROADCAST_NIXAMP_KEY ? { nixampKey: env.GROUPCALL_BROADCAST_NIXAMP_KEY } : {}),
             ...(env.GROUPCALL_BROADCAST_NIXAMP_TOKEN ? { nixampToken: env.GROUPCALL_BROADCAST_NIXAMP_TOKEN } : {}),
@@ -916,7 +921,8 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
     idleTimeout: 255,
     fetch(request, srv) {
       if (new URL(request.url).pathname === '/api/v1/broadcast/stream' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-        if (!svc.broadcastRelay) return new Response('live broadcast is not configured', { status: 404 })
+        if (!svc.broadcastRelay || !broadcastStreamKey) return new Response('live broadcast is not configured', { status: 404 })
+        if (!sameSecret(broadcastStreamKey, new URL(request.url).searchParams.get('key') ?? '')) return new Response('unauthorized', { status: 401 })
         if (server.upgrade(request, { data: {} })) return undefined
         return new Response('websocket upgrade failed', { status: 400 })
       }

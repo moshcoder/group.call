@@ -83,16 +83,17 @@ an exact-name nginx vhost with a cert from `pit-proxy-cert`. Deploy:
 
 ### Live Nixamp broadcast
 
-Set `GROUPCALL_BROADCAST_NIXAMP_URL` and `GROUPCALL_BROADCAST_NIXAMP_KEY` to enable
-automatic live broadcasts for rooms named TUI Weekly or Off The Record. When Riotcoder
-joins either podcast room, Telnyx forks both audio tracks to `/api/v1/broadcast/stream`;
-group.call mixes and encodes them as MP3 and keeps Nixamp's `/api/ingest` request open
-until the call ends, using the show name. The Nixamp server must be started with
-`--ingest`. The key is that server's control key and is sent in the `x-nixamp-key`
-header. `GROUPCALL_BROADCAST_NIXAMP_TOKEN` is also supported for an owner account
-bearer token. Set `GROUPCALL_BROADCAST_STREAM_URL` when the public WebSocket URL differs
-from the group.call origin. The relay stays disabled unless the Nixamp URL and one
-credential are present.
+Set `GROUPCALL_BROADCAST_NIXAMP_URL`, `GROUPCALL_BROADCAST_NIXAMP_KEY` and a random
+`GROUPCALL_BROADCAST_STREAM_KEY` to enable automatic live broadcasts for rooms named
+TUI Weekly or Off The Record. When Riotcoder joins either podcast room, Telnyx forks both
+audio tracks to `/api/v1/broadcast/stream`; the stream key protects that WebSocket from
+outside publishers. group.call mixes and encodes the tracks as MP3 and keeps Nixamp's
+`/api/ingest` request open until the call ends, using the show name. The Nixamp server
+must be started with `--ingest`. Its control key is sent in the `x-nixamp-key` header.
+`GROUPCALL_BROADCAST_NIXAMP_TOKEN` is also supported for an owner account bearer token.
+Set `GROUPCALL_BROADCAST_STREAM_URL` when the public WebSocket URL differs from the
+group.call origin. The relay stays disabled unless the Nixamp URL and credentials are
+present.
 
 ### Least-cost routing
 
