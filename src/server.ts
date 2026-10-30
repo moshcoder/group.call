@@ -28,6 +28,8 @@ export { VERSION }
 
 const SELF = 'group.call.pit.world'
 const SESSION = 'gc_session'
+const CAMPAIGN = 'gc_campaign'
+const CAMPAIGN_KEYS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'gbraid', 'wbraid', 'fbclid', 'msclkid']
 const SCOPES = ['openid', 'profile', 'email']
 
 const SECURITY_HEADERS: Record<string, string> = {
@@ -92,6 +94,16 @@ export function createApp(deps: Deps) {
   const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
   const statusOf = (e: unknown) => (e instanceof UserError ? e.status : 502)
   const codeParam = (c: Context) => String(c.req.param('code') ?? '').replace(/\D/g, '').slice(0, CODE_LENGTH)
+  // Keep ad attribution through sign-in without forwarding arbitrary query parameters.
+  const campaignQuery = (c: Context) => {
+    const params = new URLSearchParams()
+    for (const key of CAMPAIGN_KEYS) {
+      const value = c.req.query(key)?.trim().slice(0, 120)
+      if (value && !/[\u0000-\u001f\u007f]/.test(value)) params.set(key, value)
+    }
+    return params.toString()
+  }
+  const campaignOptions = { httpOnly: true, secure: deps.secureCookies ?? true, sameSite: 'Lax' as const, path: '/', maxAge: 30 * 60 }
 
   app.use('*', async (c, next) => {
     await next()
@@ -129,7 +141,7 @@ export function createApp(deps: Deps) {
     ),
   )
 
-  app.get('/', (c) => page(c, homePage(ctxOf(c))))
+  app.get('/', (c) => page(c, homePage(ctxOf(c), campaignQuery(c))))
   app.get('/help', (c) => page(c, helpPage(ctxOf(c))))
 
   // ---- Sign in with CoinPay -----------------------------------------------------
@@ -177,11 +189,12 @@ export function createApp(deps: Deps) {
     if (!authLimit.allow(`auth:${ip(c)}`)) return page(c, messagePage(ctxOf(c), { title: 'Slow down', message: 'Too many sign-in attempts. Try again in a few minutes.' }), 429)
     // Where to land after sign-in rides in the state CoinPay echoes back: "<random>.<path>".
     const next = c.req.query('next') ?? ''
-    const target = /^\/(rooms|me|r\/\d{4})$/.test(next) ? next.slice(1).replace('/', '~') : 'rooms'
+    const target = next === '/start' ? 'start' : /^\/(rooms|me|r\/\d{4})$/.test(next) ? next.slice(1).replace('/', '~') : 'rooms'
     const state = `${randomBytes(16).toString('base64url')}.${target}`
     const { verifier, challenge } = pkce()
     const redirectUri = `${ORIGIN}/auth/callback`
     store.saveState(state, verifier, redirectUri)
+    setCookie(c, CAMPAIGN, campaignQuery(c), campaignOptions)
     return c.redirect(authorizeUrl({ clientId: config.clientId, redirectUri, state, challenge, scopes: SCOPES, base: config.coinpayBase }))
   })
 
@@ -206,7 +219,19 @@ export function createApp(deps: Deps) {
       const ref = getCookie(c, REF)
       if (ref && isNew) await svc.affiliates.attribute(ref, user.sub).catch(() => null)
       setCookie(c, SESSION, sid, { httpOnly: true, secure: deps.secureCookies ?? true, sameSite: 'Lax', path: '/', maxAge: 30 * 86400 })
-      return c.redirect(`/${(state.split('.')[1] ?? 'rooms').replace('~', '/')}`)
+      const target = state.split('.')[1] ?? 'rooms'
+      const campaign = new URLSearchParams(getCookie(c, CAMPAIGN) ?? '').toString()
+      deleteCookie(c, CAMPAIGN, { path: '/' })
+      const query = campaign ? `?${campaign}` : ''
+      if (target === 'start') {
+        try {
+          const room = svc.createRoom(user, { name: 'Quick call' })
+          return c.redirect(`/r/${room.code}?made=1${campaign ? `&${campaign}` : ''}`)
+        } catch {
+          return c.redirect(`/rooms${query}`)
+        }
+      }
+      return c.redirect(`/${target.replace('~', '/')}${query}`)
     } catch (e) {
       return page(c, messagePage(ctx, { title: 'Sign-in failed', message: e instanceof Error ? e.message : 'CoinPay did not answer.' }), 502)
     }
@@ -246,6 +271,23 @@ export function createApp(deps: Deps) {
       return c.redirect(`/r/${room.code}?made=1`, 303)
     } catch (e) {
       return rooms(c, user, { error: message(e), values: form }, statusOf(e))
+    }
+  })
+
+  // One tap for signed-in visitors; a visitor who needs CoinPay sign-in returns
+  // here through the OAuth callback, which creates the room they asked for.
+  app.post('/start', async (c) => {
+    const campaign = campaignQuery(c)
+    const user = userOf(c)
+    if (!user) return c.redirect(`/auth/start?next=/start${campaign ? `&${campaign}` : ''}`)
+    const form = await formOf(c)
+    if (!csrfOk(c, form.csrf)) return rooms(c, user, { error: 'That form went stale. Try again.' }, 400)
+    if (!writeLimit.allow(`w:${user.sub}`)) return rooms(c, user, { error: 'Too many changes. Wait a few minutes.' }, 429)
+    try {
+      const room = svc.createRoom(user, { name: 'Quick call' })
+      return c.redirect(`/r/${room.code}?made=1${campaign ? `&${campaign}` : ''}`, 303)
+    } catch (e) {
+      return rooms(c, user, { error: message(e) }, statusOf(e))
     }
   })
 

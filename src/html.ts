@@ -103,31 +103,33 @@ const dialBlock = (ctx: Ctx, code?: string) => {
 </div>`
 }
 
-export function homePage(ctx: Ctx): string {
+export function homePage(ctx: Ctx, campaignQuery = ''): string {
+  const campaign = campaignQuery ? `&amp;${esc(campaignQuery)}` : ''
+  const startCall = ctx.user
+    ? `<form class="hero-cta" method="post" action="/start${campaignQuery ? `?${esc(campaignQuery)}` : ''}">${csrfField(ctx)}<button class="button" data-analytics-event="start_call" data-analytics-placement="hero">Start a call</button></form>`
+    : `<a class="button hero-cta" href="/auth/start?next=/start${campaign}" data-analytics-event="start_call" data-analytics-placement="hero">Start a call</a>`
   return layout({
     ctx,
     path: '/',
-    title: 'group.call: a party line for people and AI agents',
-    description: `Make a room, get a ${CODE_LENGTH}-digit code. Everyone dials one number and keys it: people on their phones, and AI agents with names and real voices. No app, no link, no account to join.`,
-    body: `<section class="hero">
-  <h1>A party line for people and AI agents.</h1>
-  <p class="lede">Make a room and get a ${CODE_LENGTH}-digit code. Everyone dials one number and keys it. People join from any phone. Agents phone in too, with names and real voices, and talk like everyone else.</p>
-  ${dialBlock(ctx)}
-  <p>${ctx.user ? '<a class="button" href="/rooms">Your rooms</a>' : signInButton('rooms', 'Make a room: sign in with CoinPay')}</p>
+    title: 'Bring people and AI agents into one call · group.call',
+    description: `Start a room, share its ${CODE_LENGTH}-digit code, and let people and connected AI agents join the same phone call. Guests can join from any phone without installing an app.`,
+    body: `<section class="hero landing-hero">
+  <p class="eyebrow">One number. One room code.</p>
+  <h1>People and AI agents, on the same call.</h1>
+  <p class="lede">Start a room and share its ${CODE_LENGTH}-digit code. People dial in from any phone; a connected AI voice agent can join the same conversation and help with the work your team brings.</p>
+  ${startCall}
+  <p class="cta-note">${ctx.user ? `Your first ${FREE_ROOMS} rooms are free.` : 'Start free with CoinPay sign-in.'}</p>
+  <p class="join-note">Have a room code? <a href="tel:${esc(ctx.dialIn)}">Call ${esc(formatNumber(ctx.dialIn))}</a>.</p>
 </section>
-<section class="cards">
-  <article><h2>Any phone</h2><p>No app, no link, no browser tab. A landline works. So does a car. The code is the whole invitation: say it out loud.</p></article>
-  <article><h2>Agents on the call</h2><p>Ask an agent into the room and it dials the same number, keys the code and introduces itself. It hears everyone and answers out loud.</p></article>
-  <article><h2>For your agents too</h2><p>An API, a CLI and an MCP server: make rooms, see who is on, say something into the room, and have your own agent dial in under its own name.</p></article>
+<section class="cards landing-cards" aria-label="How group.call works">
+  <article><h2>Start a room</h2><p>Tap “Start a call” to create a room and get a short code to share.</p></article>
+  <article><h2>People dial in</h2><p>Guests call the shared number and enter the code. No app or account is needed to join.</p></article>
+  <article><h2>Bring an AI agent</h2><p>Your own voice agents can join through the API, CLI, or MCP. What they can do depends on how each agent is set up.</p></article>
 </section>
-<section class="steps">
-  <h2>How it works</h2>
-  <ol>
-    <li><strong>Sign in with CoinPay</strong> and make a room. You get a code like <code>4821</code>.</li>
-    <li><strong>Send people the number and the code.</strong> On a phone, the room page has a one-tap link that dials and keys it for you.</li>
-    <li><strong>Watch the room live:</strong> who is on, agents arriving, lines said into the room.</li>
-  </ol>
-  <p>${FREE_ROOMS} rooms free. A room pass is $${PASS_USD} for ${PASS_DAYS} days: up to ${PASS_ROOMS} rooms, and you pick the codes. Paid through CoinPay in any coin or PayPal.</p>
+<section class="steps landing-detail">
+  <h2>Made for a shared conversation</h2>
+  <p>The room page shows who is on the line. On a phone, guests can tap once to call and enter the room code. Agents can help with tasks such as building, research, writing, email, or explaining numbers, depending on their setup. You stay in control of the work and decisions.</p>
+  <p class="muted small">Start with up to ${FREE_ROOMS} free rooms.</p>
 </section>`,
   })
 }
