@@ -111,6 +111,9 @@ export type Config = {
 export const AGENTS: Record<string, { about: string; voice: string; aliases: string[] }> = {
   riotcoder: { about: 'Builds and ships things for Anthony. Voice: Chris.', voice: 'ElevenLabs Chris', aliases: ['riot coder', 'riot'] },
   cha0spunk: { about: 'Works the inbound queue: email, support, follow-ups. Voice: Jessica.', voice: 'ElevenLabs Jessica', aliases: ['chaos punk', 'chaos'] },
+  rootkey: { about: 'Security Professional: security reviews and threat analysis.', voice: 'ElevenLabs Chris', aliases: ['root key', 'security'] },
+  coinpay: { about: 'CFO / Accountant: finance reports, reconciliation and expense review.', voice: 'ElevenLabs Daniel', aliases: ['coin pay', 'cfo', 'accountant'] },
+  knox: { about: 'VP of Sales: pipeline, proposals and client relationships.', voice: 'ElevenLabs Adam', aliases: ['knocks', 'sales'] },
 }
 
 /** How many entries a contacts book holds. */
@@ -1220,7 +1223,7 @@ export class GroupCallService {
     const ours = this.mayInviteAgents(user)
       ? Object.entries(AGENTS)
           .filter(([name]) => !saved.some((c) => c.agent === name))
-          .map(([name, a]) => ({ id: `agent:${name}`, sub: user.sub, name, kind: 'agent' as const, phone: '', sip: '', agent: name, email: '', aliases: a.aliases, note: a.about, trusted: false, createdAt: 0, updatedAt: 0, builtin: true }))
+          .map(([name, a]) => ({ id: `agent:${name}`, sub: user.sub, name, kind: 'agent' as const, phone: '', sip: '', agent: name, email: `${name}@profullstack.com`, aliases: a.aliases, note: a.about, trusted: false, createdAt: 0, updatedAt: 0, builtin: true }))
       : []
     return [...ours, ...saved]
   }
@@ -1242,7 +1245,7 @@ export class GroupCallService {
     if (rawPhone && !/^\+[1-9]\d{6,14}$/.test(phone)) throw new UserError('Give the number with its area code, like 408-555-0101 or +44 20 7946 0000.', 'phone')
     const email = str('email', 120) ?? was?.email ?? ''
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new UserError('That email does not look right.', 'email')
-    const kind = input.kind === 'agent' || input.kind === 'person' ? input.kind : agent || sip ? 'agent' : (was?.kind ?? 'person')
+    const kind = agent ? 'agent' : input.kind === 'agent' || input.kind === 'person' ? input.kind : sip ? 'agent' : (was?.kind ?? 'person')
     if (kind === 'person' && !phone) throw new UserError('A person needs a phone number to be called in.', 'phone')
     if (kind === 'agent' && !agent && !sip && !phone) throw new UserError('An agent needs one of ours, a SIP address, or a phone number.', 'sip')
     const aliasesIn = input.aliases === undefined ? undefined : Array.isArray(input.aliases) ? input.aliases.map(String) : String(input.aliases ?? '').split(',')

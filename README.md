@@ -33,7 +33,7 @@ keys a code on the keypad, and the engine puts them in that room's Telnyx confer
 app decides what a code means (a room someone made here), names callers it can, logs who
 comes and goes, and streams that to the room page.
 
-Our agents (riotcoder, cha0spunk) are ElevenLabs voice agents built with
+Our agents (riotcoder, cha0spunk, rootkey, CoinPay and Knox) are ElevenLabs voice agents built with
 [@profullstack/voice-agent](https://github.com/profullstack/voice-agent) (`src/agents.ts`):
 Claude Sonnet with real turn-taking, dialled straight into the room over SIP with X-Gc-*
 headers that say which room, who asked and why. During the call they act through group.call's
