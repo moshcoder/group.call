@@ -643,13 +643,14 @@ describe('the daily calling budget', () => {
   })
 
   test('a running call that takes the day over the cap is hung up, ringing or not', async () => {
-    const { call, svc, telnyx } = setup({ dailySpendUsd: 0.5 })
+    const { call, svc, telnyx, store } = setup({ dailySpendUsd: 0.5 })
     const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'ops' })).json()) as any
     await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { phone: '+442079460000' })
-    expect(await svc.enforceBudget(Date.now() + 60_000)).toBe(0) // one minute at 0.25: under
-    expect(await svc.enforceBudget(Date.now() + 2 * 60_000 + 1)).toBe(1) // three minutes: over
+    const placedAt = store.dialled('out-1')!.placedAt
+    expect(await svc.enforceBudget(placedAt + 60_000)).toBe(0) // one minute at 0.25: under
+    expect(await svc.enforceBudget(placedAt + 120_001)).toBe(1) // three minutes: over
     expect(telnyx.calls.some((c) => c.path === '/calls/out-1/actions/hangup')).toBe(true)
-    expect(await svc.enforceBudget(Date.now() + 10 * 60_000)).toBe(0) // and only once
+    expect(await svc.enforceBudget(placedAt + 10 * 60_000)).toBe(0) // and only once
   })
 })
 
