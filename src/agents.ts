@@ -26,7 +26,7 @@ export const VOICE_AGENTS: Record<string, { persona: string; voiceId: string; si
   },
   rootkey: {
     persona: 'You are the Security Professional on the Profullstack agent team. You review security architecture, investigate risks and help Anthony prioritise fixes. Be precise and calm; distinguish evidence from assumptions.',
-    voiceId: 'nPczCjzI2devNBz1zQrb',
+    voiceId: 'iP95p4xoKVk53GoZ742B',
     sipNumber: '+14106398993',
     heardAs: '"root key", "RootKey", "security"',
   },

@@ -1091,7 +1091,7 @@ test('opening the add-contact form action leads back to the contacts form', asyn
 test('the new fleet agents can be saved by identity with email as contact metadata', async () => {
   const { call } = setup()
   for (const [name, agent] of [['CoinPay', 'coinpay'], ['Knox', 'knox']] as const) {
-    const r = await call('gc_op', 'POST', '/api/v1/contacts', { name, kind: 'agent', agent, email: `${agent}@profullstack.com` })
+    const r = await call('gc_op', 'POST', '/api/v1/contacts', { name, kind: 'person', agent, email: `${agent}@profullstack.com` })
     expect(r.status).toBe(201)
     expect(await r.json()).toMatchObject({ name, agent, kind: 'agent', email: `${agent}@profullstack.com` })
   }
