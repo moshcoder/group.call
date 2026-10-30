@@ -61,15 +61,35 @@ cancels). It needs the room owner's pass, and the keypad route rings 10 numbers 
 Contacts and inviting by name: each account keeps a contacts book of people (a phone) and
 agents (one of ours, a SIP voice agent such as an ElevenLabs agent, or an agent on a phone
 number, which joins on answer with no press 1), with aliases for how speech recognition
-spells them ("chaos punk"). Operators have riotcoder and cha0spunk in their book without
+spells them ("chaos punk"). Operators have all five fleet agents in their book without
 saving them. On a call, a known caller (or a person the owner marked trusted) just says
 **"invite riotcoder, cha0spunk and Kim"**: each name is matched against the room owner's
 book, agents are queued, people are rung, and the room hears what happened ("Kim is not in
 the contacts" when one is not). The same from the room page (**Invite from your contacts**),
-`/me#contacts`, the CLI (`groupcall contacts`, `groupcall contact add|rm`, `groupcall invite
+`/me#contacts`, the CLI (`groupcall contacts`, `groupcall contact add|show|update|rm`, `groupcall invite
 <code> <names...>`), the TUI (`n` on a room), MCP (`invite`, `list_contacts`, `add_contact`,
-`remove_contact`) and the API (`GET|POST /api/v1/contacts`, `PATCH|DELETE
+`get_contact`, `update_contact`, `remove_contact`) and the API (`GET|POST /api/v1/contacts`, `PATCH|DELETE
 /api/v1/contacts/:id`, `POST /api/v1/rooms/:code/invite {names}`).
+
+Contact management uses your account API key from `/me` on every client:
+
+```sh
+bunx @profullstack/groupcall contacts --json
+bunx @profullstack/groupcall contact add CoinPay --agent coinpay --email coinpay@profullstack.com
+bunx @profullstack/groupcall contact show CoinPay
+bunx @profullstack/groupcall contact update CoinPay --note "CFO / Accountant" --alias "coin pay,CFO"
+bunx @profullstack/groupcall contact update Kim --phone +14085550101 --untrusted
+bunx @profullstack/groupcall contact update CoinPay --note="" --alias=""
+bunx @profullstack/groupcall contact rm <contact-id>
+```
+
+Updates preserve fields you omit; `--name` renames a contact. Use an exact name or id;
+ambiguous names require an id. Builtin agents must be saved with `contact add` before
+editing or removing their saved entry. Removing a saved fleet agent leaves the builtin
+available to operators. Email is optional metadata: calling requires a phone, SIP address,
+or registered agent identity. The desktop app bundles this CLI; the PWA shares the web
+contact book. MCP exposes the same book with `list_contacts`, `get_contact`, `add_contact`,
+`update_contact`, and `remove_contact`.
 
 Sign-in is CoinPay OAuth only. Rooms: 3 free. A room pass costs $5 for 30 days and gives
 50 rooms and codes you choose, paid through a CoinPay hosted checkout.
