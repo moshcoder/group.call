@@ -316,7 +316,7 @@ ${
   data.contacts
     ? `<section id="contacts">
   <h2>Contacts</h2>
-  <p class="muted small">People and agents you invite by name: say <b>"invite riotcoder and Kim"</b> on a call, type names on a room page, or <code>groupcall invite 4821 riotcoder kim</code>. A person is rung and presses 1. An agent is one of ours, a SIP voice agent (like an ElevenLabs agent), or an agent on a phone number, which joins on answer. Aliases help the speech recognizer ("chaos punk"). A trusted person may ask for invites by voice from their phone.</p>
+  <p class="muted small">People and agents you invite by name: say <b>"invite riotcoder and Kim"</b> on a call, type names on a room page, or <code>groupcall invite 4821 riotcoder kim</code>. A person is rung and presses 1. An agent is one of ours, a SIP voice agent (like an ElevenLabs agent), or an agent on a phone number, which joins on answer. Email stores contact details; it does not send an invitation or provide a number to call. Choose one of our agents above or provide a phone or SIP address. Aliases help the speech recognizer ("chaos punk"). A trusted person may ask for invites by voice from their phone.</p>
   ${
     data.contacts.length
       ? `<ul class="contacts">${data.contacts
@@ -328,7 +328,7 @@ ${
           .join('')}</ul>`
       : '<p class="muted">No contacts yet.</p>'
   }
-  <form method="post" action="/me/contacts/add" class="row">${csrfField(ctx)}<input name="name" maxlength="40" required placeholder="Name" aria-label="Name"><select name="kind" aria-label="Person or agent"><option value="person">Person</option><option value="agent">Agent</option></select><input name="phone" type="tel" placeholder="Phone" aria-label="Phone"><input name="sip" placeholder="SIP (agents): sip:...@sip.rtc.elevenlabs.io" aria-label="SIP address"><input name="email" type="email" placeholder="Email (optional)" aria-label="Email"><input name="aliases" maxlength="200" placeholder="Also called (comma separated)" aria-label="Aliases"><label class="small"><input type="checkbox" name="trusted" value="1"> trusted</label><button>Add contact</button></form>
+  <form method="post" action="/me/contacts/add" class="row">${csrfField(ctx)}<input name="name" maxlength="40" required placeholder="Name" aria-label="Name"><select name="kind" aria-label="Person or agent"><option value="person">Person</option><option value="agent">Agent</option></select><input name="phone" type="tel" placeholder="Phone" aria-label="Phone"><input name="sip" placeholder="SIP (agents): sip:...@sip.rtc.elevenlabs.io" aria-label="SIP address"><select name="agent" aria-label="Our agent"><option value="">Our agent (optional)</option>${Object.keys(AGENTS).map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select><input name="email" type="email" placeholder="Email (contact details only)" aria-label="Email"><input name="aliases" maxlength="200" placeholder="Also called (comma separated)" aria-label="Aliases"><label class="small"><input type="checkbox" name="trusted" value="1"> trusted</label><button>Add contact</button></form>
 </section>`
     : ''
 }

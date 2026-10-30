@@ -958,7 +958,7 @@ describe('the contacts book and inviting by name', () => {
     const kim = await call('gc_op', 'POST', '/api/v1/contacts', { name: 'Kim Lee', phone: '408-555-0123', aliases: ['kimmy'] })
     expect(kim.status).toBe(201)
     const book = ((await (await call('gc_op', 'GET', '/api/v1/contacts')).json()) as any).contacts
-    expect(book.map((c: any) => `${c.name}:${c.kind}:${c.builtin ?? false}`)).toEqual(['riotcoder:agent:true', 'cha0spunk:agent:true', 'Kim Lee:person:false'])
+    expect(book.map((c: any) => `${c.name}:${c.kind}:${c.builtin ?? false}`)).toEqual(['riotcoder:agent:true', 'cha0spunk:agent:true', 'rootkey:agent:true', 'coinpay:agent:true', 'knox:agent:true', 'Kim Lee:person:false'])
 
     await event('call.initiated', { call_control_id: 'leg-me', direction: 'incoming', from: ME })
     await event('call.gather.ended', { call_control_id: 'leg-me', digits: room.code })
@@ -1073,9 +1073,29 @@ describe('our agents as ElevenLabs voice agents', () => {
 test('the agent prompt and tools are what the ElevenLabs agents get', async () => {
   const { agentSpecs } = await import('../src/agents.ts')
   const specs = agentSpecs('https://group.call.test', 's')
-  expect(specs.map((s) => s.name)).toEqual(['riotcoder (group.call)', 'cha0spunk (group.call)'])
+  expect(specs.map((s) => s.name)).toEqual(['riotcoder (group.call)', 'cha0spunk (group.call)', 'rootkey (group.call)', 'coinpay (group.call)', 'knox (group.call)'])
   expect(specs[0]!.tools!.map((t) => t.name)).toEqual(['room_status', 'take_task', 'call_in', 'invite', 'text_room'])
   expect(specs[0]!.tools![1]!.url).toBe('https://group.call.test/api/agent-tools/take_task')
   expect(specs[1]!.prompt).toContain('You are cha0spunk')
   expect(specs[1]!.variables!.sip_gc_agent).toBe('cha0spunk')
+})
+
+
+test('opening the add-contact form action leads back to the contacts form', async () => {
+  const { app } = setup()
+  const r = await app.request('/me/contacts/add')
+  expect(r.status).toBe(303)
+  expect(r.headers.get('location')).toBe('/me#contacts')
+})
+
+test('the new fleet agents can be saved by identity with email as contact metadata', async () => {
+  const { call } = setup()
+  for (const [name, agent] of [['CoinPay', 'coinpay'], ['Knox', 'knox']] as const) {
+    const r = await call('gc_op', 'POST', '/api/v1/contacts', { name, kind: 'agent', agent, email: `${agent}@profullstack.com` })
+    expect(r.status).toBe(201)
+    expect(await r.json()).toMatchObject({ name, agent, kind: 'agent', email: `${agent}@profullstack.com` })
+  }
+  const { contacts } = await (await call('gc_op', 'GET', '/api/v1/contacts')).json() as any
+  expect(contacts.filter((c: any) => c.agent === 'coinpay')).toHaveLength(1)
+  expect(contacts.filter((c: any) => c.agent === 'knox')).toHaveLength(1)
 })

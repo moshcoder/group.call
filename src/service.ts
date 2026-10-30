@@ -111,6 +111,9 @@ export type Config = {
 export const AGENTS: Record<string, { about: string; voice: string; aliases: string[] }> = {
   riotcoder: { about: 'Builds and ships things for Anthony. Voice: Chris.', voice: 'ElevenLabs Chris', aliases: ['riot coder', 'riot'] },
   cha0spunk: { about: 'Works the inbound queue: email, support, follow-ups. Voice: Jessica.', voice: 'ElevenLabs Jessica', aliases: ['chaos punk', 'chaos'] },
+  rootkey: { about: 'Security Professional: security reviews and threat analysis.', voice: 'ElevenLabs Brian', aliases: ['root key', 'security'] },
+  coinpay: { about: 'CFO / Accountant: finance reports, reconciliation and expense review.', voice: 'ElevenLabs Daniel', aliases: ['coin pay', 'cfo', 'accountant'] },
+  knox: { about: 'VP of Sales: pipeline, proposals and client relationships.', voice: 'ElevenLabs Adam', aliases: ['knocks', 'sales'] },
 }
 
 /** How many entries a contacts book holds. */
@@ -1220,7 +1223,7 @@ export class GroupCallService {
     const ours = this.mayInviteAgents(user)
       ? Object.entries(AGENTS)
           .filter(([name]) => !saved.some((c) => c.agent === name))
-          .map(([name, a]) => ({ id: `agent:${name}`, sub: user.sub, name, kind: 'agent' as const, phone: '', sip: '', agent: name, email: '', aliases: a.aliases, note: a.about, trusted: false, createdAt: 0, updatedAt: 0, builtin: true }))
+          .map(([name, a]) => ({ id: `agent:${name}`, sub: user.sub, name, kind: 'agent' as const, phone: '', sip: '', agent: name, email: `${name}@profullstack.com`, aliases: a.aliases, note: a.about, trusted: false, createdAt: 0, updatedAt: 0, builtin: true }))
       : []
     return [...ours, ...saved]
   }

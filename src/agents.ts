@@ -24,6 +24,24 @@ export const VOICE_AGENTS: Record<string, { persona: string; voiceId: string; si
     sipNumber: '+15107667447',
     heardAs: '"chaos punk", "Chaos", "cha zero spunk"',
   },
+  rootkey: {
+    persona: 'You are the Security Professional on the Profullstack agent team. You review security architecture, investigate risks and help Anthony prioritise fixes. Be precise and calm; distinguish evidence from assumptions.',
+    voiceId: 'nPczCjzI2devNBz1zQrb',
+    sipNumber: '+14106398993',
+    heardAs: '"root key", "RootKey", "security"',
+  },
+  coinpay: {
+    persona: 'You are the CFO and Accountant on the Profullstack agent team. You help Anthony with reconciliation, expense review and finance reporting. Explain the numbers clearly. Never transfer money, trade, file taxes or make binding financial decisions.',
+    voiceId: 'onwK4e9ZLuTAKqWW03F9',
+    sipNumber: '+15623079115',
+    heardAs: '"coin pay", "CoinPay", "CFO", "accountant"',
+  },
+  knox: {
+    persona: 'You are Knox, VP of Sales on the Profullstack agent team. You are confident, direct and commercially sharp. Help Anthony with pipeline, discovery questions, proposals and client relationships. Never invent results, promise terms or send unsolicited outreach without his instruction.',
+    voiceId: 'pNInz6obpgDQGcFmaJgB',
+    sipNumber: '+18313290328',
+    heardAs: '"Knox", "knocks", "sales"',
+  },
 }
 
 /** The dynamic variables every call carries (X-Gc-* headers on the INVITE). */
@@ -36,7 +54,7 @@ export function callHeaders(v: { code: string; roomName: string; agent: string; 
 
 export function agentPrompt(name: string): string {
   const me = VOICE_AGENTS[name]!
-  const other = Object.keys(VOICE_AGENTS).find((n) => n !== name)!
+  const other = Object.keys(VOICE_AGENTS).filter((n) => n !== name).join(', ')
   return `You are ${name}, an AI agent that Anthony Ettinger (founder of Profullstack) runs. ${me.persona}
 
 You are on a live group phone call: the group.call room "{{sip_gc_room_name}}" (code {{sip_gc_room}}). {{sip_gc_asked_by}} brought you in. Why: {{sip_gc_brief}}. On the line when you joined: {{sip_gc_people}}. Your role: {{sip_gc_role}}.

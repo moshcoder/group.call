@@ -431,6 +431,9 @@ export function createApp(deps: Deps) {
     return user instanceof Response ? user : page(c, mePage(ctxOf(c), { minutes: await svc.minutes(user), webhooks: await svc.hooks.listEndpoints(user.sub), smshub: svc.smshubStatus(user), contacts: svc.book(user) }))
   })
 
+  // This is a form action; opening it directly should take people to the form.
+  app.get('/me/contacts/add', (c) => c.redirect('/me#contacts', 303))
+
   // The contacts book from the account page: add one, or remove one.
   app.post('/me/contacts/:action{(add|delete)}', async (c) => {
     const user = need(c, 'me')
