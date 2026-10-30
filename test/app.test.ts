@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { generateKeyPairSync, sign as signMessage } from 'node:crypto'
+import { createHmac, generateKeyPairSync, sign as signMessage } from 'node:crypto'
 import { signWebhook } from '@profullstack/coinpay-onboard'
 import { createApp } from '../src/server.ts'
 import { Sealer, Store } from '../src/db.ts'
@@ -243,16 +243,58 @@ describe('room passes', () => {
 })
 
 describe('pages', () => {
-  test('the home page says how to call, carries the PWA manifest, and is safe to frame-bust', async () => {
+  test('the home page is a clear, trackable call landing page and carries the PWA manifest', async () => {
     const { app } = setup()
-    const r = await app.request('/')
+    const r = await app.request('/?utm_source=search&utm_campaign=fall&discard=not-forwarded')
     const html = await r.text()
     expect(r.status).toBe(200)
     expect(html).toContain('510-616-9327')
+    expect(html).toContain('People and AI agents, on the same call.')
+    expect(html).toContain('Start a call')
+    expect(html).toContain('data-analytics-event="start_call"')
+    expect(html).toContain('/auth/start?next=/start&amp;utm_source=search&amp;utm_campaign=fall')
+    expect(html).not.toContain('discard=not-forwarded')
     expect(html).toContain('rel="manifest"')
     expect(r.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
     expect((await app.request('/manifest.webmanifest')).headers.get('content-type')).toContain('manifest+json')
     expect((await app.request('/sw.js')).headers.get('cache-control')).toBe('no-cache')
+  })
+
+  test('one signed-in tap starts a room and carries UTM values into it', async () => {
+    const { app, store, guest } = setup()
+    const sid = store.newSession(guest.sub)
+    const csrf = createHmac('sha256', 'k'.repeat(32)).update(`csrf:${sid}`).digest('hex').slice(0, 32)
+    const r = await app.request('/start?utm_source=search&utm_campaign=fall', {
+      method: 'POST',
+      headers: { cookie: `gc_session=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ csrf }).toString(),
+    })
+    expect(r.status).toBe(303)
+    expect(r.headers.get('location')).toMatch(/^\/r\/\d{4}\?made=1&utm_source=search&utm_campaign=fall$/)
+    expect(store.rooms(guest.sub)).toHaveLength(1)
+  })
+
+  test('CoinPay sign-in remembers the start intent and only the approved campaign fields', async () => {
+    const fetch = async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname
+      if (path === '/api/oauth/token') return new Response(JSON.stringify({ access_token: 'new-access', expires_in: 3600 }), { status: 200 })
+      if (path === '/api/oauth/userinfo') return new Response(JSON.stringify({ sub: 'sub-new', name: 'New User', email: 'new@example.com' }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    }
+    const { app, store } = setup({ fetch })
+    const r = await app.request('/auth/start?next=/start&utm_source=search&utm_campaign=fall&discard=no')
+    const authorize = new URL(r.headers.get('location')!)
+    expect(r.status).toBe(302)
+    const state = authorize.searchParams.get('state')!
+    expect(state).toMatch(/^[A-Za-z0-9_-]+\.start$/)
+    const cookie = r.headers.get('set-cookie')!
+    expect(cookie).toContain('gc_campaign=utm_source%3Dsearch%26utm_campaign%3Dfall')
+    expect(r.headers.get('set-cookie')).not.toContain('discard')
+
+    const callback = await app.request(`/auth/callback?state=${encodeURIComponent(state)}&code=approved`, { headers: { cookie: cookie.split(';', 1)[0]! } })
+    expect(callback.status).toBe(302)
+    expect(callback.headers.get('location')).toMatch(/^\/r\/\d{4}\?made=1&utm_source=search&utm_campaign=fall$/)
+    expect(store.rooms('sub-new')).toHaveLength(1)
   })
 
   test('a room page needs you signed in, and is only its owner\'s', async () => {
