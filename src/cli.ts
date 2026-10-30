@@ -1,7 +1,7 @@
 /**
  * groupcall: group.call from the terminal.
  */
-import { GroupCallClient, type ApiRoom } from './client.js'
+import { GroupCallClient, type ApiRoom, type ApiContact } from './client.js'
 import { VERSION } from './version.js'
 
 export const HELP = `groupcall ${VERSION}: a party line for people and AI agents (https://group.call.pit.world)
@@ -21,6 +21,8 @@ export const HELP = `groupcall ${VERSION}: a party line for people and AI agents
   groupcall invite <code> <names...>        invite from your contacts by name: groupcall invite 4821 riotcoder, Kim
   groupcall contacts                        your contacts book: people and agents you invite by name
   groupcall contact add <name...> [--phone N] [--sip URI] [--agent riotcoder] [--email E] [--alias a,b] [--kind agent] [--trusted]
+  groupcall contact show <id|name>          view all contact details
+  groupcall contact update <id|name> [--name N] [same fields as add] [--untrusted]
   groupcall contact rm <id|name>            remove a contact
   groupcall redeem <credit-code>            add call minutes from a code someone gave you
   groupcall invite-link [note]              a single-use invite link (you both get bonus minutes)
@@ -61,7 +63,7 @@ export function flag(argv: string[], name: string): string | undefined {
 
 export async function main(argv = process.argv.slice(2), out: Out = console, client = new GroupCallClient()): Promise<number> {
   const json = argv.includes('--json')
-  const valued = ['--code', '--port', '--as', '--phone', '--sip', '--agent', '--email', '--alias', '--kind', '--note']
+  const valued = ['--code', '--port', '--as', '--phone', '--sip', '--agent', '--email', '--alias', '--kind', '--note', '--name']
   const args = argv.filter((a, i) => !a.startsWith('--') && !valued.includes(argv[i - 1] ?? ''))
   const [command, ...rest] = args
   const show = (value: unknown, text: string) => out.log(json ? JSON.stringify(value, null, 2) : text)
@@ -176,21 +178,38 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       }
       case 'contact': {
         const [sub, ...words] = rest
-        if (sub === 'add') {
-          const fields = { name: need(words.join(' ') || undefined, 'name'), ...pick({ phone: flag(argv, 'phone'), sip: flag(argv, 'sip'), agent: flag(argv, 'agent'), email: flag(argv, 'email'), kind: flag(argv, 'kind'), note: flag(argv, 'note') }), ...(flag(argv, 'alias') ? { aliases: flag(argv, 'alias')!.split(',') } : {}), ...(argv.includes('--trusted') ? { trusted: true } : {}) }
-          const c = await client.addContact(fields as never)
-          show(c, `added ${contactLine(c)}`)
+        if (sub === 'show' || sub === 'get') {
+          const c = await client.contact(need(words.join(' ') || undefined, 'contact id or name'))
+          show(c, Object.entries(c).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n'))
           return 0
         }
-        if (sub === 'rm' || sub === 'remove') {
-          const want = need(words.join(' ') || undefined, 'contact id or name')
-          const c = (await client.contacts()).contacts.find((x) => !x.builtin && (x.id === want || x.name.toLowerCase() === want.toLowerCase()))
-          if (!c) throw new Error(`no contact ${want}`)
+        if (sub === 'add' || sub === 'update' || sub === 'edit') {
+          const fields: Partial<Omit<ApiContact, 'id' | 'builtin'>> = pick({ name: flag(argv, 'name'), phone: flag(argv, 'phone'), sip: flag(argv, 'sip'), agent: flag(argv, 'agent'), email: flag(argv, 'email'), kind: flag(argv, 'kind'), note: flag(argv, 'note') }) as Partial<ApiContact>
+          for (const key of ['name', 'phone', 'sip', 'agent', 'email', 'kind', 'note', 'alias']) {
+            if (argv.includes(`--${key}`) && (flag(argv, key) === undefined || flag(argv, key)!.startsWith('--'))) throw new Error(`--${key} needs a value (use --${key}="" to clear it)`)
+          }
+          if (flag(argv, 'alias') !== undefined) fields.aliases = flag(argv, 'alias')!.split(',').map((a) => a.trim()).filter(Boolean)
+          if (argv.includes('--trusted') && argv.includes('--untrusted')) throw new Error('choose --trusted or --untrusted')
+          if (argv.includes('--trusted') || argv.includes('--untrusted')) fields.trusted = argv.includes('--trusted')
+          if (sub === 'add') {
+            fields.name = need(words.join(' ') || fields.name, 'name')
+            const c = await client.addContact(fields)
+            show(c, `added ${contactLine(c)}`)
+          } else {
+            const was = await client.contact(need(words.join(' ') || undefined, 'contact id or name'), true)
+            if (!Object.keys(fields).length) throw new Error('provide at least one field to update')
+            const c = await client.updateContact(was.id, fields)
+            show(c, `updated ${contactLine(c)}`)
+          }
+          return 0
+        }
+        if (sub === 'rm' || sub === 'remove' || sub === 'delete') {
+          const c = await client.contact(need(words.join(' ') || undefined, 'contact id or name'), true)
           await client.removeContact(c.id)
           show({ ok: true, id: c.id }, `removed ${c.name}`)
           return 0
         }
-        throw new Error('groupcall contact add <name> [--phone N] [--sip URI] ... | groupcall contact rm <id|name>')
+        throw new Error('groupcall contact add|show|update|rm (see groupcall help)')
       }
       case 'invite-link': {
         const r = await client.newInvite(rest.join(' ') || undefined)

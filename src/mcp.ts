@@ -18,6 +18,18 @@ const wrap = (fn: (a: any) => Promise<unknown>) => async (a: any) => {
     return failure(e)
   }
 }
+const fleetAgent = z.enum(['riotcoder', 'cha0spunk', 'rootkey', 'coinpay', 'knox'])
+const contactFields = {
+  name: z.string().min(1).max(40).optional(),
+  kind: z.enum(['person', 'agent']).optional(),
+  phone: z.string().optional(),
+  sip: z.union([z.literal(''), z.string().regex(/^sips?:/)]).optional(),
+  agent: z.union([z.literal(''), fleetAgent]).optional(),
+  email: z.string().optional(),
+  aliases: z.array(z.string().max(40)).max(8).optional(),
+  note: z.string().max(200).optional(),
+  trusted: z.boolean().optional(),
+}
 const code = z.string().regex(/^\d{4}$/).describe('A room code, four digits, e.g. 4821')
 
 export function createMcpServer(client = new GroupCallClient()): McpServer {
@@ -70,28 +82,24 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
   server.tool('list_contacts', 'Your contacts book: people and agents you can invite by name (operators also see our own agents, builtin).', {}, wrap(() => client.contacts()))
   server.tool(
     'add_contact',
-    'Add someone to your contacts book. A person needs a phone. An agent needs one of ours (agent: riotcoder|cha0spunk), a SIP address (sip:...@sip.rtc.elevenlabs.io) or a phone number (it joins on answer). aliases help speech recognition ("chaos punk"); trusted lets a person ask for invites by voice from their phone.',
-    {
-      name: z.string().min(1).max(40),
-      kind: z.enum(['person', 'agent']).optional(),
-      phone: z.string().optional(),
-      sip: z.string().regex(/^sips?:/).optional(),
-      agent: z.enum(['riotcoder', 'cha0spunk']).optional(),
-      email: z.string().optional(),
-      aliases: z.array(z.string().max(40)).max(8).optional(),
-      note: z.string().max(200).optional(),
-      trusted: z.boolean().optional(),
-    },
+    'Add someone to your contacts book. A person needs a phone. An agent needs one of ours (agent: riotcoder|cha0spunk|rootkey|coinpay|knox), a SIP address (sip:...@sip.rtc.elevenlabs.io) or a phone number (it joins on answer). aliases help speech recognition ("chaos punk"); trusted lets a person ask for invites by voice from their phone.',
+    { ...contactFields, name: z.string().min(1).max(40) },
     wrap((c) => client.addContact(c)),
   )
+  server.tool('get_contact', 'View one contact by exact id or name. Ambiguous names require an id.', { reference: z.string().min(1) }, wrap(({ reference }) => client.contact(reference)))
+  server.tool('update_contact', 'Edit a saved contact by id. Only supplied fields change; empty strings or aliases:[] clear optional details. Builtin agents must be added first. Email is contact metadata, not a call destination.', { id: z.string().min(1), ...contactFields }, wrap(async ({ id, ...fields }) => {
+    if (!Object.keys(fields).length) throw new Error('provide at least one field to update')
+    const c = await client.contact(id, true)
+    return client.updateContact(c.id, fields)
+  }))
   server.tool('remove_contact', 'Remove a contact by its id (from list_contacts).', { id: z.string() }, wrap(({ id }) => client.removeContact(id)))
-  server.tool('invite_agent', "Ask one of the instance's own agents (riotcoder or cha0spunk) to dial in to a room. Operators only.", { code, agent: z.enum(['riotcoder', 'cha0spunk']) }, wrap(({ code, agent }) => client.invite(code, agent)))
+  server.tool('invite_agent', "Ask one of the instance's own agents (riotcoder, cha0spunk, rootkey, coinpay or knox) to dial in to a room. Operators only.", { code, agent: fleetAgent }, wrap(({ code, agent }) => client.invite(code, agent)))
   server.tool('create_invite', 'Make a single-use invite link to group.call (each person has a few). Whoever signs in through it and you both get bonus minutes.', { note: z.string().max(80).optional() }, wrap(({ note }) => client.newInvite(note)))
   server.tool('redeem_code', 'Redeem a credit code (extra call minutes, one-off or every month).', { code: z.string().min(6) }, wrap(({ code }) => client.redeem(code)))
   server.tool(
     'set_greeter',
     "Give a room a greeter: one of our agents dials in when someone arrives before the host, keeps them company, and leaves when the host joins. host is a phone number or a name on the line (e.g. a SIP agent's); omit it and the greeter hands over to the next person who joins. agent 'off' removes it. Operators only.",
-    { code, agent: z.enum(['riotcoder', 'cha0spunk', 'off']), host: z.string().max(40).optional() },
+    { code, agent: z.union([fleetAgent, z.literal('off')]), host: z.string().max(40).optional() },
     wrap(({ code, agent, host }) => client.greeter(code, agent === 'off' ? null : agent, host ?? '')),
   )
   server.tool(

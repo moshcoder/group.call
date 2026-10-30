@@ -171,6 +171,17 @@ export class GroupCallClient {
   contacts(): Promise<{ contacts: ApiContact[] }> {
     return this.call('GET', '/api/v1/contacts')
   }
+  /** Resolve an exact id or name, refusing ambiguous names and builtin mutations. */
+  async contact(reference: string, savedOnly = false): Promise<ApiContact> {
+    const { contacts } = await this.contacts()
+    const exact = contacts.find((c) => c.id === reference)
+    const matches = exact ? [exact] : contacts.filter((c) => c.name.toLowerCase() === reference.toLowerCase())
+    if (!matches.length) throw new Error(`no contact ${reference}`)
+    if (matches.length > 1) throw new Error(`ambiguous contact ${reference}; use an id: ${matches.map((c) => c.id).join(', ')}`)
+    const contact = matches[0]!
+    if (savedOnly && contact.builtin) throw new Error(`${contact.name} is a builtin agent; add it to your contacts before editing or removing it`)
+    return contact
+  }
   addContact(contact: Partial<Omit<ApiContact, 'id' | 'builtin'>>): Promise<ApiContact> {
     return this.call('POST', '/api/v1/contacts', contact)
   }
