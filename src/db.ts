@@ -36,7 +36,7 @@ export type AgentTask = { id: string; agent: string; code: string; roomName: str
 export type Pass = { id: string; sub: string; amountCents: number; status: string; checkoutUrl: string; days: number; paidAt: number | null; createdAt: number }
 
 /** A call the room placed (a phone rung in): what it was estimated to cost a minute and, once Telnyx says, what it cost. */
-export type DialledLeg = { leg: string; code: string; to: string; provider: string; rate: number; placedAt: number; endedAt: number | null; cost: number | null }
+export type DialledLeg = { leg: string; code: string; to: string; provider: string; name: string; rate: number; placedAt: number; endedAt: number | null; cost: number | null }
 
 export class Sealer {
   private readonly key: Buffer
@@ -114,7 +114,7 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS leg_quality_code ON leg_quality(code, id DESC);
       CREATE TABLE IF NOT EXISTS dialled_legs (
-        leg TEXT PRIMARY KEY, code TEXT NOT NULL, to_number TEXT NOT NULL, provider TEXT NOT NULL,
+        leg TEXT PRIMARY KEY, code TEXT NOT NULL, to_number TEXT NOT NULL, provider TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
         rate REAL NOT NULL, placed_at INTEGER NOT NULL, ended_at INTEGER, cost REAL
       );
       CREATE INDEX IF NOT EXISTS dialled_legs_placed ON dialled_legs(placed_at);
@@ -188,7 +188,7 @@ export class Store {
     // Group texts: every number a room has texted, and whether it said STOP.
     this.db.exec('CREATE TABLE IF NOT EXISTS sms_numbers (number TEXT PRIMARY KEY, opted_out INTEGER NOT NULL DEFAULT 0, first_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)')
     // Added later: an agent that waits in the room with early callers until the host arrives.
-    for (const sql of ['ALTER TABLE rooms ADD COLUMN greeter TEXT', 'ALTER TABLE rooms ADD COLUMN host TEXT', "ALTER TABLE agent_invites ADD COLUMN role TEXT NOT NULL DEFAULT ''"]) {
+    for (const sql of ['ALTER TABLE rooms ADD COLUMN greeter TEXT', 'ALTER TABLE rooms ADD COLUMN host TEXT', "ALTER TABLE agent_invites ADD COLUMN role TEXT NOT NULL DEFAULT ''", "ALTER TABLE dialled_legs ADD COLUMN name TEXT NOT NULL DEFAULT ''"]) {
       try {
         this.db.exec(sql)
       } catch {}
@@ -443,8 +443,8 @@ export class Store {
 
   // ---- what calls out cost ----------------------------------------------
 
-  addDialled(d: Omit<DialledLeg, 'endedAt' | 'cost'>): void {
-    this.db.query('INSERT OR REPLACE INTO dialled_legs (leg, code, to_number, provider, rate, placed_at) VALUES (?, ?, ?, ?, ?, ?)').run(d.leg, d.code, d.to, d.provider, d.rate, d.placedAt)
+  addDialled(d: Omit<DialledLeg, 'endedAt' | 'cost' | 'name'> & { name?: string }): void {
+    this.db.query('INSERT OR REPLACE INTO dialled_legs (leg, code, to_number, provider, name, rate, placed_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(d.leg, d.code, d.to, d.provider, d.name ?? '', d.rate, d.placedAt)
   }
 
   dialled(leg: string): DialledLeg | null {
@@ -641,4 +641,4 @@ export class Store {
   }
 }
 
-const dialledRow = (r: any): DialledLeg => ({ leg: r.leg, code: r.code, to: r.to_number, provider: r.provider, rate: r.rate, placedAt: r.placed_at, endedAt: r.ended_at, cost: r.cost })
+const dialledRow = (r: any): DialledLeg => ({ leg: r.leg, code: r.code, to: r.to_number, provider: r.provider, name: r.name ?? '', rate: r.rate, placedAt: r.placed_at, endedAt: r.ended_at, cost: r.cost })
