@@ -274,12 +274,35 @@ phase_setup() {
   log "setup ok: runtime=$RUNTIME state=$STATE_DIR"
 }
 
+install_agent_phone() {
+  [ "$APP" = group-call ] || return 0
+  [ -f "$SRC_DIR/ops/agent-phone.mjs" ] || return 0
+  local worker_user worker_home worker_group worker_node
+  worker_user="${AGENT_PHONE_USER:-anthony}"
+  worker_home="$(getent passwd "$worker_user" | cut -d: -f6)"
+  [ -n "$worker_home" ] || die "AGENT_PHONE_USER '$worker_user' has no home directory"
+  worker_group="$(id -gn "$worker_user")"
+  worker_node="$worker_home/.local/share/mise/shims/node"
+  [ -x "$worker_node" ] || die "agent worker node runtime missing: $worker_node"
+  install -d -o "$worker_user" -g "$worker_group" -m 0750 "$worker_home/.local/share/agent-phone" "$worker_home/.local/bin"
+  install -o "$worker_user" -g "$worker_group" -m 0750 "$SRC_DIR/ops/agent-phone.mjs" "$worker_home/.local/share/agent-phone/agent-phone.mjs"
+  cat > "$worker_home/.local/bin/agent-phone.tmp" <<EOF
+#!/bin/sh
+exec $worker_node $worker_home/.local/share/agent-phone/agent-phone.mjs "\$@"
+EOF
+  chown "$worker_user:$worker_group" "$worker_home/.local/bin/agent-phone.tmp"
+  chmod 0750 "$worker_home/.local/bin/agent-phone.tmp"
+  mv "$worker_home/.local/bin/agent-phone.tmp" "$worker_home/.local/bin/agent-phone"
+  log "agent worker installed for $worker_user"
+}
+
 phase_build() {
   detect
   load_env
   cd "$SRC_DIR"
   if [ "$INSTALL_CMD" != none ]; then log "install: $INSTALL_CMD"; bash -c "$INSTALL_CMD"; fi
   if [ "$BUILD_CMD" != none ]; then log "build: $BUILD_CMD"; NODE_ENV=production bash -c "$BUILD_CMD"; fi
+  install_agent_phone
   log "build ok"
 }
 

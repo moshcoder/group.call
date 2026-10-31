@@ -13,3 +13,4 @@ jobs:
       - run: bun x tsc --noEmit
       - run: bun test
       - run: node --test test/agent-phone.test.mjs
+      - run: bash -n bin/install.sh
