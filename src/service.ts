@@ -279,6 +279,11 @@ export class GroupCallService {
             onLeave: (code, who, info) => {
               store.dropLeg(code, who.leg, info.callers === 0)
               this.record(code, 'leave', who, info.callers)
+              const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
+              if (shown.kind === 'agent' && config.agentSip?.[shown.name]) {
+                const open = store.openInvite(code, shown.name)
+                if (open) store.finishInvite(open.id, 'failed', 'the voice provider disconnected before the agent responded; check ElevenLabs credits or quota')
+              }
               void this.charge(code, who.joinedAt).catch((e) => console.error('group.call: minutes:', e))
             },
             ...(config.transcribe === false ? {} : { transcribe: { engine: 'Deepgram', language: 'en' } }),
@@ -287,6 +292,10 @@ export class GroupCallService {
               // An agent's voice coming back through a person's speakerphone is the agent, not them.
               if (shown.kind === 'person' && this.isEcho(code, text)) return
               this.addLine(code, shown.name, shown.kind, text)
+              if (shown.kind === 'agent' && this.config.agentSip?.[shown.name]) {
+                const open = store.openInvite(code, shown.name)
+                if (open) store.finishInvite(open.id, 'done', 'responded on the call')
+              }
               if (shown.kind === 'person') void this.voiceInvite(code, who, text).catch((e) => console.error('group.call: voice invite:', e))
             },
             onRecording: (r) => void this.saveRecording(r).catch((e) => console.error('group call: recording:', e)),
@@ -540,7 +549,11 @@ export class GroupCallService {
     const before = this.store.minutesUsed(room.sub, GroupCallService.month())
     const after = this.store.addMinutes(room.sub, GroupCallService.month(), minutes)
     const over = Math.min(minutes, Math.max(0, after - Math.max(before, free)))
-    if (over > 0) await this.credits.spend(room.sub, 'minutes', Math.min(over, await this.credits.balance(room.sub, 'minutes')), `room ${code}`)
+    if (over > 0) {
+      const balance = await this.credits.balance(room.sub, 'minutes')
+      const spend = Math.min(over, balance)
+      if (spend > 0) await this.credits.spend(room.sub, 'minutes', spend, `room ${code}`)
+    }
   }
 
   /**
@@ -1125,7 +1138,7 @@ export class GroupCallService {
     const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
     if (shown.kind === 'agent' && this.config.agentSip?.[shown.name]) {
       const open = this.store.openInvite(code, shown.name)
-      if (open) this.store.finishInvite(open.id, 'done', 'on the call (voice agent)')
+      if (open) this.store.finishInvite(open.id, 'dialling', 'connected; waiting for the agent to respond')
       return
     }
     const room = this.store.room(code)

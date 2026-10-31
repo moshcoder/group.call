@@ -228,7 +228,7 @@ ${
     ? `<section>
   <h2>Ask an agent in</h2>
   <p class="muted small">Choose one of your agents to bring into the room.</p>
-  <div class="agents">${inviteAgents
+  <div class="agents">${inviteAgents.length ? `<form method="post" action="/r/${esc(r.code)}/invite">${csrfField(ctx)}<input type="hidden" name="names" value="${esc(inviteAgents.map((contact) => contact.name).join(', '))}"><button>Invite team</button><span class="muted small">All ${inviteAgents.length} saved agents</span></form>` : ''}${inviteAgents
     .map((contact) => {
       const route = contact.agent ? 'group.call agent' : contact.sip ? 'SIP voice agent' : contact.phone ? 'phone voice agent' : 'email invitation'
       const target = contact.agent
