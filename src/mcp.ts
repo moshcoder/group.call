@@ -18,7 +18,7 @@ const wrap = (fn: (a: any) => Promise<unknown>) => async (a: any) => {
     return failure(e)
   }
 }
-const fleetAgent = z.enum(['riotcoder', 'cha0spunk', 'rootkey', 'coinpay', 'knox'])
+const fleetAgent = z.enum(['riotcoder', 'cha0spunk', 'rootkey', 'coinpay', 'knox', 'nora'])
 const contactFields = {
   name: z.string().min(1).max(40).optional(),
   kind: z.enum(['person', 'agent']).optional(),
@@ -82,7 +82,7 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
   server.tool('list_contacts', 'Your contacts book: people and agents you can invite by name (operators also see our own agents, builtin).', {}, wrap(() => client.contacts()))
   server.tool(
     'add_contact',
-    'Add someone to your contacts book with any details you have. A phone or SIP address lets group.call call them; an email-only contact gets room dialing instructions when invited. An agent can also be one of ours (riotcoder|cha0spunk|rootkey|coinpay|knox). Aliases help speech recognition ("chaos punk"); trusted lets a person ask for invites by voice from their phone.',
+    'Add someone to your contacts book with any details you have. A phone or SIP address lets group.call call them; an email-only contact gets room dialing instructions when invited. An agent can also be one of ours (riotcoder|cha0spunk|rootkey|coinpay|knox|nora). Aliases help speech recognition ("chaos punk"); trusted lets a person ask for invites by voice from their phone.',
     { ...contactFields, name: z.string().min(1).max(40) },
     wrap((c) => client.addContact(c)),
   )
@@ -93,7 +93,7 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
     return client.updateContact(c.id, fields)
   }))
   server.tool('remove_contact', 'Remove a contact by its id (from list_contacts).', { id: z.string() }, wrap(({ id }) => client.removeContact(id)))
-  server.tool('invite_agent', "Ask one of the instance's own agents (riotcoder, cha0spunk, rootkey, coinpay or knox) to dial in to a room. Operators only.", { code, agent: fleetAgent }, wrap(({ code, agent }) => client.invite(code, agent)))
+  server.tool('invite_agent', "Ask one of the instance's own agents (riotcoder, cha0spunk, rootkey, coinpay, knox or nora) to dial in to a room. Operators only.", { code, agent: fleetAgent }, wrap(({ code, agent }) => client.invite(code, agent)))
   server.tool('create_invite', 'Make a single-use invite link to group.call (each person has a few). Whoever signs in through it and you both get bonus minutes.', { note: z.string().max(80).optional() }, wrap(({ note }) => client.newInvite(note)))
   server.tool('redeem_code', 'Redeem a credit code (extra call minutes, one-off or every month).', { code: z.string().min(6) }, wrap(({ code }) => client.redeem(code)))
   server.tool(

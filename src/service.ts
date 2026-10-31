@@ -113,9 +113,10 @@ export type Config = {
 export const AGENTS: Record<string, { about: string; voice: string; aliases: string[] }> = {
   riotcoder: { about: 'Builds and ships things for Anthony. Voice: Chris.', voice: 'ElevenLabs Chris', aliases: ['riot coder', 'riot'] },
   cha0spunk: { about: 'Works the inbound queue: email, support, follow-ups. Voice: Jessica.', voice: 'ElevenLabs Jessica', aliases: ['chaos punk', 'chaos'] },
-  rootkey: { about: 'Security Professional: security reviews and threat analysis.', voice: 'ElevenLabs Chris', aliases: ['root key', 'security'] },
+  rootkey: { about: 'Security Professional: security reviews and threat analysis. Voice: Eric.', voice: 'ElevenLabs Eric', aliases: ['root key', 'security'] },
   coinpay: { about: 'CFO / Accountant: finance reports, reconciliation and expense review.', voice: 'ElevenLabs Daniel', aliases: ['coin pay', 'cfo', 'accountant'] },
   knox: { about: 'VP of Sales: pipeline, proposals and client relationships.', voice: 'ElevenLabs Adam', aliases: ['knocks', 'sales'] },
+  nora: { about: 'Workplace well-being and career coach.', voice: 'ElevenLabs Sarah', aliases: ['nora coach', 'career coach', 'workplace coach'] },
 }
 
 /** How many entries a contacts book holds. */

@@ -33,13 +33,13 @@ keys a code on the keypad, and the engine puts them in that room's Telnyx confer
 app decides what a code means (a room someone made here), names callers it can, logs who
 comes and goes, and streams that to the room page.
 
-Our agents (riotcoder, cha0spunk, rootkey, CoinPay and Knox) are ElevenLabs voice agents built with
+Our agents (riotcoder, cha0spunk, rootkey, CoinPay, Knox and Nora) are ElevenLabs voice agents built with
 [@profullstack/voice-agent](https://github.com/profullstack/voice-agent) (`src/agents.ts`):
 Claude Sonnet with real turn-taking, dialled straight into the room over SIP with X-Gc-*
 headers that say which room, who asked and why. During the call they act through group.call's
 agent tools (`/api/agent-tools/*`: room_status, take_task, call_in, invite, text_room), each
 allowed only when a trusted caller spoke in the last two minutes. take_task queues the work for
-the agent's task runner, which posts the result to qrypt.chat. Deploy or update both with
+the agent's task runner, which posts the result to qrypt.chat. Deploy or update them with
 `ELEVENLABS_API_KEY=... GROUPCALL_AGENT_TOOL_SECRET=... bun src/agents.ts`, then set the printed
 `GROUPCALL_AGENT_SIP` and the secret in app.env. Without `GROUPCALL_AGENT_SIP` they fall back
 to the older phone path below.
@@ -62,7 +62,7 @@ Contacts and inviting by name: each account keeps a contacts book of people and 
 with aliases for how speech recognition spells them ("chaos punk"). A contact can be
 reached by one of our agent identities, a SIP address, a phone number, or email. Phone
 contacts are called; email-only contacts receive the room name, dial-in number and code
-by email, then call in themselves. Operators have all five fleet agents in their book
+by email, then call in themselves. Operators have all six fleet agents in their book
 without saving them. On a call, a known caller (or a person the owner marked trusted) just
 says **"invite riotcoder, cha0spunk and Kim"**: each name is matched against the room
 owner's book, agents are queued, people are rung or emailed, and the room hears what
@@ -88,7 +88,7 @@ bunx @profullstack/groupcall contact rm <contact-id>
 Updates preserve fields you omit; `--name` renames a contact. Use an exact name or id;
 ambiguous names require an id. Builtin agents must be saved with `contact add` before
 editing or removing their saved entry. Removing a saved fleet agent leaves the builtin
-available to operators. Add an email-only contact with `groupcall contact add Nora --kind agent --email nora@example.com`, then invite by name with `groupcall invite 4821 Nora`. Group Call sends the room name, dial-in number and code through Forward Email SMTP from `anthony@profullstack.com`; Gmail is not used. Email-only contacts join by calling the number in the invitation. The desktop app bundles this CLI; the PWA shares the web contact book. MCP exposes the same book with `list_contacts`, `get_contact`, `add_contact`,
+available to operators. Add an email-only contact with `groupcall contact add Jamie --kind agent --email jamie@example.com`, then invite by name with `groupcall invite 4821 Jamie`. Group Call sends the room name, dial-in number and code through Forward Email SMTP from `anthony@profullstack.com`; Gmail is not used. Email-only contacts join by calling the number in the invitation. The desktop app bundles this CLI; the PWA shares the web contact book. MCP exposes the same book with `list_contacts`, `get_contact`, `add_contact`,
 `update_contact`, and `remove_contact`.
 
 Sign-in is CoinPay OAuth only. Rooms: 3 free. A room pass costs $5 for 30 days and gives

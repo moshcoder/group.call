@@ -175,7 +175,13 @@ const lineHtml = (l: Line) => `<li class="${esc(l.kind)}"><span class="muted">${
 
 export function roomPage(ctx: Ctx, data: { room: Room; owner: boolean; live: { name: string; kind: string; since: number }[]; events: RoomEvent[]; invites: AgentInvite[]; transcript: Line[]; contacts?: (Contact & { builtin?: boolean })[]; recordings?: Recording[]; canRecord?: boolean; flash?: string; error?: string }): string {
   const r = data.room
-  const agentContacts = (data.contacts ?? []).filter((c) => !c.builtin && c.kind === 'agent')
+  const inviteAgents = Array.from(
+    new Map(
+      (data.contacts ?? [])
+        .filter((c) => c.kind === 'agent')
+        .map((c) => [c.agent ? `agent:${c.agent}` : `contact:${c.id}`, c] as const),
+    ).values(),
+  )
   const people = data.live.length
     ? data.live.map((p) => `<li class="${esc(p.kind)}"><span class="dot" aria-hidden="true"></span>${esc(p.name)} <span class="muted">${p.kind === 'agent' ? 'agent' : 'on the phone'}</span></li>`).join('')
     : '<li class="empty muted">Nobody on the line.</li>'
@@ -221,17 +227,16 @@ ${
   ctx.agents
     ? `<section>
   <h2>Ask an agent in</h2>
-  <div class="agents">${Object.entries(AGENTS)
-    .map(([name, a]) => `<form method="post" action="/r/${esc(r.code)}/invite">${csrfField(ctx)}<input type="hidden" name="agent" value="${esc(name)}"><button class="secondary">Invite ${esc(name)}</button><span class="muted small">${esc(a.about)}</span></form>`)
-    .join('')}</div>
-  ${agentContacts.length ? `<h3>Your agents</h3>
-  <p class="muted small">Saved voice agents from your contacts. Invite one directly into this room.</p>
-  <div class="agents">${agentContacts
+  <p class="muted small">Choose one of your agents to bring into the room.</p>
+  <div class="agents">${inviteAgents
     .map((contact) => {
       const route = contact.agent ? 'group.call agent' : contact.sip ? 'SIP voice agent' : contact.phone ? 'phone voice agent' : 'email invitation'
-      return `<form method="post" action="/r/${esc(r.code)}/invite">${csrfField(ctx)}<input type="hidden" name="names" value="${esc(contact.name)}"><button class="secondary">Invite ${esc(contact.name)}</button><span class="muted small">${route}</span></form>`
+      const target = contact.agent
+        ? `<input type="hidden" name="agent" value="${esc(contact.agent)}">`
+        : `<input type="hidden" name="names" value="${esc(contact.name)}">`
+      return `<form method="post" action="/r/${esc(r.code)}/invite">${csrfField(ctx)}${target}<button class="secondary">Invite ${esc(contact.name)}</button><span class="muted small">${route}</span></form>`
     })
-    .join('')}</div>` : ''}
+    .join('')}</div>
   <h3>Greeter</h3>
   <p class="muted small">${r.greeter ? `${esc(r.greeter)} waits with anyone who dials in before ${esc(hostLabel(r))}, talks with them, and leaves when the host joins.` : 'An agent that dials in when somebody arrives before the host, keeps them company, and leaves when the host joins.'}</p>
   <form method="post" action="/r/${esc(r.code)}/greeter" class="row">${csrfField(ctx)}<select name="greeter" aria-label="Greeter"><option value="off">No greeter</option>${Object.keys(AGENTS)
@@ -453,7 +458,7 @@ export function helpPage(ctx: Ctx): string {
 </section>
 <section id="agents">
   <h2>Agents</h2>
-  <p>An agent joins the way a person does: it places a phone call to ${esc(number)}, keys the code with touch tones, then listens (speech to text) and talks (text to speech) on that call. Our agents (riotcoder and cha0spunk) do this with ElevenLabs voices. Room owners on this instance can invite them from the room page.</p>
+  <p>Our voice agents dial into the room over SIP and use group.call tools to follow the room context. The fleet includes riotcoder, cha0spunk, rootkey, CoinPay, Knox and Nora. Room owners on this instance can invite them from the room page.</p>
   <p><b>Invite by name.</b> Keep <a href="/me#contacts">a contacts book</a> of people and agents, reached by one of our agent identities, a SIP address, a phone number or email. On the call, just say <b>"invite riotcoder, cha0spunk and Kim"</b>: agents dial in, phone contacts are called, email-only contacts get the room number and code, and the room hears what happened. That works for the room's known callers and for people you marked trusted; anyone else saying it changes nothing. Also <code>groupcall invite 4821 riotcoder, Kim</code>, MCP <code>invite</code>, or <code>POST /api/v1/rooms/4821/invite {"names": "riotcoder, Kim"}</code>.</p>
   <p><b>Group texts.</b> Share a link on a call (a readm3.com report, a PDF, anything) and everyone on the line gets it by text from ${esc(number)}: text it to ${esc(number)} while you are on the call, use <b>Text everyone</b> on the room page, <code>groupcall text 4821 https://readm3.com/...</code>, MCP <code>text_room</code>, or ask riotcoder on the call. Reply STOP to stop getting them. Optional: connect the same CoinPay account from <a href="https://smshub.dev/settings">SMSHub Settings</a> and your rooms' texts go out as smshub groups from your own number; if smshub cannot send, the room number is used.</p>
   <p><b>Webhooks.</b> Add a URL on <a href="/me#webhooks">your account</a> (or <code>groupcall webhook add</code>, MCP <code>create_webhook</code>, <code>POST /api/v1/webhooks</code>) and group.call POSTs <code>room.joined</code>, <code>room.left</code>, <code>transcript.line</code>, <code>text.sent</code>, <code>phone.called</code> and <code>recording.ready</code> to it as signed CloudEvents (Standard Webhooks, via <code>@profullstack/webhooks</code>).</p>

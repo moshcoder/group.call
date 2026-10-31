@@ -1,17 +1,17 @@
 /**
- * Our agents (riotcoder, cha0spunk) as ElevenLabs voice agents, through
+ * Our agents as ElevenLabs voice agents, through
  * @profullstack/voice-agent: a real conversational model with turn-taking,
  * dialled into a room over SIP, doing work through group.call's agent tools.
  *
  *   ELEVENLABS_API_KEY=... GROUPCALL_AGENT_TOOL_SECRET=... bun src/agents.ts
  *
- * deploys both and prints the GROUPCALL_AGENT_SIP line for app.env. Run it again
- * after changing a prompt; the agents are found by name and updated.
+ * deploys the agents and prints the GROUPCALL_AGENT_SIP line for app.env. Run it
+ * again after changing a prompt; the agents are found by name and updated.
  */
 import { deploy, sipHeaders, type VoiceAgentSpec, type WebhookTool } from '@profullstack/voice-agent'
 
 /** Who each agent is, its voice, and the number that names it on SIP (its group.call caller id). */
-export const VOICE_AGENTS: Record<string, { persona: string; voiceId: string; sipNumber: string; heardAs: string }> = {
+export const VOICE_AGENTS: Record<string, { persona: string; voiceId: string; sipNumber: string; heardAs: string; displayName?: string; firstMessage?: string }> = {
   riotcoder: {
     persona: 'You build and ship software for Anthony across the Profullstack fleet: sites, APIs, CLIs, deploys, fixes. You are direct, a little dry, and you get to the point.',
     voiceId: 'iP95p4xoKVk53GoZ742B',
@@ -25,10 +25,11 @@ export const VOICE_AGENTS: Record<string, { persona: string; voiceId: string; si
     heardAs: '"chaos punk", "Chaos", "cha zero spunk"',
   },
   rootkey: {
-    persona: 'You are the Security Professional on the Profullstack agent team. You review security architecture, investigate risks and help Anthony prioritise fixes. Be precise and calm; distinguish evidence from assumptions.',
-    voiceId: 'iP95p4xoKVk53GoZ742B',
+    persona: 'You are the Security Professional on the Profullstack agent team. You review security architecture, investigate risks and help Anthony prioritise fixes. Be precise and calm; distinguish evidence from assumptions. When Anthony asks you to listen and give feedback, contribute a useful security perspective after his next substantive point, even if he does not repeat your name. Wait for a pause instead of going silent or talking over him.',
+    voiceId: 'cjVigY5qzO86Huf0OWal',
     sipNumber: '+14106398993',
     heardAs: '"root key", "RootKey", "security"',
+    firstMessage: 'Rootkey, security review here.',
   },
   coinpay: {
     persona: 'You are the CFO and Accountant on the Profullstack agent team. You help Anthony with reconciliation, expense review and finance reporting. Explain the numbers clearly. Never transfer money, trade, file taxes or make binding financial decisions.',
@@ -41,6 +42,14 @@ export const VOICE_AGENTS: Record<string, { persona: string; voiceId: string; si
     voiceId: 'pNInz6obpgDQGcFmaJgB',
     sipNumber: '+18313290328',
     heardAs: '"Knox", "knocks", "sales"',
+  },
+  nora: {
+    displayName: 'Nora — Profullstack Workplace Well-being & Career Coach',
+    persona: 'You are Nora, Profullstack\'s workplace well-being and career coach. You are an AI, not a licensed therapist. Listen with warmth, offer practical and grounded feedback about work stress and career choices, and take part naturally in the group conversation. Keep your advice within that role.',
+    voiceId: 'EXAVITQu4vr4xnSDxMaL',
+    sipNumber: '+16505550147',
+    heardAs: '"Nora", "Nora coach", "career coach"',
+    firstMessage: 'Nora here, the workplace coach. What would you like me to listen for?',
   },
 }
 
@@ -119,9 +128,9 @@ export function agentTools(origin: string, secret: string): WebhookTool[] {
 
 export function agentSpecs(origin: string, secret: string): VoiceAgentSpec[] {
   return Object.entries(VOICE_AGENTS).map(([name, a]) => ({
-    name: `${name} (group.call)`,
+    name: a.displayName ?? `${name} (group.call)`,
     prompt: agentPrompt(name),
-    firstMessage: `{{sip_gc_agent}} here.`,
+    firstMessage: a.firstMessage ?? `{{sip_gc_agent}} here.`,
     voiceId: a.voiceId,
     llm: 'claude-sonnet-5-5',
     temperature: 0.6,
@@ -142,11 +151,13 @@ if (import.meta.main) {
   const secret = process.env.GROUPCALL_AGENT_TOOL_SECRET ?? ''
   if (!apiKey || !secret) throw new Error('set ELEVENLABS_API_KEY and GROUPCALL_AGENT_TOOL_SECRET')
   const origin = process.env.GROUPCALL_ORIGIN ?? 'https://group.call.pit.world'
+  const only = process.env.GROUPCALL_AGENT_ONLY?.trim().toLowerCase()
+  if (only && !VOICE_AGENTS[only]) throw new Error(`Unknown agent ${only}. Choose ${Object.keys(VOICE_AGENTS).join(', ')}.`)
   const sips: string[] = []
-  for (const spec of agentSpecs(origin, secret)) {
+  for (const spec of agentSpecs(origin, secret).filter((a) => !only || a.name.toLowerCase().startsWith(only))) {
     const d = await deploy(spec, { apiKey })
     console.log(`${spec.name}: ${d.created ? 'created' : 'updated'} ${d.agentId}`)
-    sips.push(`${spec.name.split(' ')[0]}=${d.sip}`)
+    sips.push(`${spec.name.split(' ')[0]!.toLowerCase()}=${d.sip}`)
   }
   console.log(`GROUPCALL_AGENT_SIP=${sips.join(',')}`)
 }
