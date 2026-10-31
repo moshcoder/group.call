@@ -28,7 +28,7 @@
     "@profullstack/affiliates": "^0.1.0",
     "@profullstack/coinpay-onboard": "^0.2.0",
     "@profullstack/footer": "^0.2.6",
-    "@profullstack/group-call": "^0.6.0",
+    "@profullstack/group-call": "^0.6.1",
     "@profullstack/hqtui": "^0.11.0",
     "@profullstack/redeem-credits": "^0.1.0",
     "@profullstack/voice-agent": "0.1.1",
