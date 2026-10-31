@@ -410,6 +410,7 @@ export class Store {
 
   removeRoom(code: string): void {
     this.db.transaction(() => {
+      this.db.query('DELETE FROM agent_invites WHERE code = ?').run(code)
       this.db.query('DELETE FROM rooms WHERE code = ?').run(code)
       this.db.query('DELETE FROM room_events WHERE code = ?').run(code)
       this.db.query('DELETE FROM transcript_lines WHERE code = ?').run(code)
@@ -608,6 +609,11 @@ export class Store {
 
   invites(code: string, limit = 10): AgentInvite[] {
     return (this.db.query('SELECT * FROM agent_invites WHERE code = ? ORDER BY created_at DESC LIMIT ?').all(code, limit) as any[]).map((r) => this.toInvite(r)!)
+  }
+
+  /** Agents ever invited to this room are its standing team roster. */
+  roomAgentRoster(code: string): { agent: string; sub: string }[] {
+    return this.db.query('SELECT agent, MAX(sub) AS sub FROM agent_invites WHERE code = ? GROUP BY agent ORDER BY agent').all(code) as { agent: string; sub: string }[]
   }
 
   // ---- room passes -------------------------------------------------------

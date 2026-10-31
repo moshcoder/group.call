@@ -3,7 +3,7 @@ import { createHmac, generateKeyPairSync, sign as signMessage } from 'node:crypt
 import { signWebhook } from '@profullstack/coinpay-onboard'
 import { createApp } from '../src/server.ts'
 import { Sealer, Store } from '../src/db.ts'
-import { FREE_ROOMS, telLink } from '../src/service.ts'
+import { AGENTS, FREE_ROOMS, telLink } from '../src/service.ts'
 
 /** An ed25519 pair standing in for the Telnyx account's, so a test can sign webhooks. */
 function telnyxKeys() {
@@ -472,26 +472,28 @@ test('an invite stuck "dialling" from an agent that never arrived does not block
   expect(store.invite(first.id)?.status).toBe('failed')
 })
 
-test('agents who timed out or left before the host returned are dialled back into the room', async () => {
-  const { call, event, store, telnyx } = setup({ agentSip: { riotcoder: 'sip:+15106169327@sip.rtc.elevenlabs.io', coinpay: 'sip:+15106169328@sip.rtc.elevenlabs.io' } })
-  const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Late host' })).json()) as any
-  const expired = store.addInvite({ code: room.code, agent: 'riotcoder', sub: 'sub-op' })
-  store.finishInvite(expired.id, 'done', 'on the call 182 s, nobody came')
-  const left = store.addInvite({ code: room.code, agent: 'coinpay', sub: 'sub-op' })
-  store.finishInvite(left.id, 'done', 'on the call 182 s, everyone else left')
+test('a room brings its standing agent team in only after the owner joins', async () => {
+  const ownerPhone = '+14086562473'
+  const { call, event, store, svc, op } = setup({ knownCallers: { [ownerPhone]: 'Anthony' } })
+  const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Team room' })).json()) as any
+  await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/greeter`, { agent: 'cha0spunk' })
+  const original = new Set<string>()
+  for (const agent of Object.keys(AGENTS)) {
+    const invite = svc.inviteAgent(op, room.code, agent)
+    original.add(invite.id)
+    store.finishInvite(invite.id, 'done', 'previous call ended', Date.now() - 30 * 60_000)
+    store.db.query('UPDATE agent_invites SET created_at = ? WHERE id = ?').run(Date.now() - 30 * 60_000, invite.id)
+  }
+  expect(svc.nextInvite()).toBeNull()
 
-  await event('call.initiated', { call_control_id: 'late-host', direction: 'incoming', from: '+15550001111' })
-  await event('call.gather.ended', { call_control_id: 'late-host', digits: room.code })
+  await event('call.initiated', { call_control_id: 'guest-first', direction: 'incoming', from: '+15550001111' })
+  await event('call.gather.ended', { call_control_id: 'guest-first', digits: room.code })
+  expect(svc.nextInvite()).toBeNull()
 
-  expect(store.invite(expired.id)?.note).toBe('requeued after host arrival')
-  expect(store.invite(left.id)?.note).toBe('requeued after host arrival')
-  expect(store.invites(room.code, 10).some((invite) => invite.id !== expired.id && invite.agent === 'riotcoder')).toBe(true)
-  expect(store.invites(room.code, 10).some((invite) => invite.id !== left.id && invite.agent === 'coinpay')).toBe(true)
-  expect(telnyx.calls.some((c) => c.path === '/calls' && c.body.to.includes('sip.rtc.elevenlabs.io'))).toBe(true)
-
-  await event('call.initiated', { call_control_id: 'second-host', direction: 'incoming', from: '+15550001112' })
-  await event('call.gather.ended', { call_control_id: 'second-host', digits: room.code })
-  expect(telnyx.calls.filter((c) => c.path === '/calls')).toHaveLength(2)
+  await event('call.initiated', { call_control_id: 'room-owner', direction: 'incoming', from: ownerPhone })
+  await event('call.gather.ended', { call_control_id: 'room-owner', digits: room.code })
+  const queued = store.invites(room.code, 50).filter((invite) => !original.has(invite.id) && invite.status === 'queued')
+  expect(queued.map((invite) => invite.agent).sort()).toEqual(Object.keys(AGENTS).sort())
 })
 
 test("a known caller is named, and agents can see which recent lines came from someone trusted", async () => {
