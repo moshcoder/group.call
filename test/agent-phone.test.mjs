@@ -32,6 +32,11 @@ test('ElevenLabs requests keep their API key reference', () => {
   });
 });
 
+test('agent join identity uses one DTMF token and rejects malformed tokens', () => {
+  assert.equal(worker.identityDtmf('00428193'), '*00428193#');
+  assert.throws(() => worker.identityDtmf('428193'), /eight digits/);
+});
+
 test('a new call identifies its actual agent even when room history has a different agent', () => {
   const history = [{ who: 'cha0spunk', text: 'old line', at: new Date(now - 15 * minute).toISOString(), history: true }];
   assert.equal(worker.shouldIntroduce('riotcoder', history, now), true);

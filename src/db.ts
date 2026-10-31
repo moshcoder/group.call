@@ -9,7 +9,7 @@
  * CoinPay tokens are sealed with GROUPCALL_KEY.
  */
 import { Database } from 'bun:sqlite'
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomInt } from 'node:crypto'
 import type { Contact } from './contacts.js'
 
 export type User = { sub: string; name: string; email: string; apiKeyHash: string | null; createdAt: number }
@@ -20,7 +20,7 @@ export type Room = { code: string; sub: string; name: string; createdAt: number;
 export type Recording = { id: string; code: string; conferenceId: string; recordingId: string | null; status: 'recording' | 'saving' | 'ready' | 'failed'; path: string; bytes: number; durationSecs: number | null; startedAt: number; endedAt: number | null; note: string }
 
 /** What happened in a room: somebody joined or left, or a line was said into it. */
-export type RoomEvent = { id: number; code: string; kind: 'join' | 'leave' | 'say' | 'invite' | 'quality' | 'text'; who: string; text: string; at: number }
+export type RoomEvent = { id: number; code: string; kind: 'join' | 'leave' | 'say' | 'invite' | 'identify' | 'quality' | 'text'; who: string; text: string; at: number }
 
 /** How a leg sounded, from Telnyx's call_quality_stats on hangup. */
 export type LegQuality = { code: string; leg: string; who: string; mosIn: number | null; mosOut: number | null; jitterMs: number | null; lossPct: number | null; at: number }
@@ -28,7 +28,7 @@ export type LegQuality = { code: string; leg: string; who: string; mosIn: number
 /** One line said in a room: transcribed from a caller's leg, or typed in and read aloud. */
 export type Line = { id: number; code: string; who: string; kind: 'person' | 'agent' | 'typed'; text: string; at: number }
 
-export type AgentInvite = { id: string; code: string; agent: string; sub: string; role: string; status: 'queued' | 'dialling' | 'done' | 'failed'; note: string; createdAt: number; updatedAt: number }
+export type AgentInvite = { id: string; code: string; agent: string; sub: string; role: string; joinToken: string; status: 'queued' | 'dialling' | 'done' | 'failed'; note: string; createdAt: number; updatedAt: number }
 
 /** Work an agent took on during a call, waiting for its task runner (riotcoder-qc and the like). */
 export type AgentTask = { id: string; agent: string; code: string; roomName: string; brief: string; ack: string; said: string; status: 'queued' | 'taken'; createdAt: number }
@@ -134,6 +134,7 @@ export class Store {
         sub TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'queued',
         note TEXT NOT NULL DEFAULT '',
+        join_token TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -188,7 +189,7 @@ export class Store {
     // Group texts: every number a room has texted, and whether it said STOP.
     this.db.exec('CREATE TABLE IF NOT EXISTS sms_numbers (number TEXT PRIMARY KEY, opted_out INTEGER NOT NULL DEFAULT 0, first_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)')
     // Added later: an agent that waits in the room with early callers until the host arrives.
-    for (const sql of ['ALTER TABLE rooms ADD COLUMN greeter TEXT', 'ALTER TABLE rooms ADD COLUMN host TEXT', "ALTER TABLE agent_invites ADD COLUMN role TEXT NOT NULL DEFAULT ''", "ALTER TABLE dialled_legs ADD COLUMN name TEXT NOT NULL DEFAULT ''"]) {
+    for (const sql of ['ALTER TABLE rooms ADD COLUMN greeter TEXT', 'ALTER TABLE rooms ADD COLUMN host TEXT', "ALTER TABLE agent_invites ADD COLUMN role TEXT NOT NULL DEFAULT ''", "ALTER TABLE agent_invites ADD COLUMN join_token TEXT NOT NULL DEFAULT ''", "ALTER TABLE dialled_legs ADD COLUMN name TEXT NOT NULL DEFAULT ''"]) {
       try {
         this.db.exec(sql)
       } catch {}
@@ -519,6 +520,10 @@ export class Store {
     })()
   }
 
+  nameLiveLeg(leg: string, name: string): void {
+    this.db.query('UPDATE live_legs SET name = ? WHERE leg = ?').run(name, leg)
+  }
+
   dropLeg(code: string, leg: string, roomEmpty: boolean): void {
     this.db.transaction(() => {
       this.db.query('DELETE FROM live_legs WHERE leg = ?').run(leg)
@@ -557,13 +562,21 @@ export class Store {
   // ---- agent invites -----------------------------------------------------
 
   private toInvite(r: any): AgentInvite | null {
-    return r ? { id: r.id, code: r.code, agent: r.agent, sub: r.sub, role: r.role ?? '', status: r.status, note: r.note, createdAt: r.created_at, updatedAt: r.updated_at } : null
+    return r ? { id: r.id, code: r.code, agent: r.agent, sub: r.sub, role: r.role ?? '', joinToken: r.join_token ?? '', status: r.status, note: r.note, createdAt: r.created_at, updatedAt: r.updated_at } : null
   }
 
   addInvite(i: Pick<AgentInvite, 'code' | 'agent' | 'sub'> & { role?: string }, now = Date.now()): AgentInvite {
     const id = `inv_${randomBytes(9).toString('base64url')}`
-    this.db.query("INSERT INTO agent_invites (id, code, agent, sub, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)").run(id, i.code, i.agent, i.sub, i.role ?? '', now, now)
+    const joinToken = String(randomInt(0, 100_000_000)).padStart(8, '0')
+    this.db.query("INSERT INTO agent_invites (id, code, agent, sub, role, join_token, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)").run(id, i.code, i.agent, i.sub, i.role ?? '', joinToken, now, now)
     return this.invite(id)!
+  }
+
+  /** Consume a short-lived DTMF token once to name an agent whose caller ID was withheld. */
+  consumeAgentJoinToken(code: string, token: string, now = Date.now()): string | null {
+    if (!/^\d{8}$/.test(token)) return null
+    const row = this.db.query("UPDATE agent_invites SET join_token = '', updated_at = ? WHERE id = (SELECT id FROM agent_invites WHERE code = ? AND join_token = ? AND status = 'dialling' ORDER BY created_at DESC LIMIT 1) AND join_token = ? RETURNING agent").get(now, code, token, token) as { agent: string } | null
+    return row?.agent ?? null
   }
 
   invite(id: string): AgentInvite | null {
@@ -581,7 +594,7 @@ export class Store {
    * whoever asked has given up.
    */
   claimInvite(now = Date.now()): AgentInvite | null {
-    this.db.query("UPDATE agent_invites SET status = 'failed', note = 'nobody picked it up in time', updated_at = ? WHERE status = 'queued' AND created_at < ?").run(now, now - 10 * 60_000)
+    this.db.query("UPDATE agent_invites SET status = 'failed', note = 'nobody picked it up in time', join_token = '', updated_at = ? WHERE status = 'queued' AND created_at < ?").run(now, now - 10 * 60_000)
     return this.toInvite(
       this.db
         .query("UPDATE agent_invites SET status = 'dialling', updated_at = ? WHERE id = (SELECT id FROM agent_invites WHERE status = 'queued' ORDER BY created_at LIMIT 1) RETURNING *")
@@ -590,7 +603,7 @@ export class Store {
   }
 
   finishInvite(id: string, status: 'dialling' | 'done' | 'failed', note = '', now = Date.now()): void {
-    this.db.query('UPDATE agent_invites SET status = ?, note = ?, updated_at = ? WHERE id = ?').run(status, note.slice(0, 300), now, id)
+    this.db.query("UPDATE agent_invites SET status = ?, note = ?, join_token = CASE WHEN ? = 'dialling' THEN join_token ELSE '' END, updated_at = ? WHERE id = ?").run(status, note.slice(0, 300), status, now, id)
   }
 
   invites(code: string, limit = 10): AgentInvite[] {

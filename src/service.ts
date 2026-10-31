@@ -174,7 +174,7 @@ export const formatNumber = (e164: string) => {
 /** One tap from a phone: dial, wait for the prompt, key the code. */
 export const telLink = (dialIn: string, code: string) => `tel:${dialIn},,,${code}%23`
 
-export type LiveEvent = { type: 'join' | 'leave' | 'say' | 'invite' | 'line'; code: string; who: string; text?: string; callers: number; at: number; line?: Line }
+export type LiveEvent = { type: 'join' | 'leave' | 'say' | 'invite' | 'identify' | 'line'; code: string; who: string; text?: string; callers: number; at: number; line?: Line }
 
 /** A participant as a page or the API may see them: a name, or a masked number. */
 /** Who a room's greeter waits for, in words. */
@@ -254,7 +254,16 @@ export class GroupCallService {
               store.touchRoom(code)
               return { welcome: `Welcome to ${room.name}. ${owner && this.mayCallPhones(owner) ? 'Press star to call someone in. ' : ''}` }
             },
-            onInvite: (code, who, digits) => this.callInFromLine(code, who, digits),
+            onInvite: async (code, who, digits) => {
+              const agent = store.consumeAgentJoinToken(code, digits)
+              if (!agent) return this.callInFromLine(code, who, digits)
+              who.name = agent
+              store.nameLiveLeg(who.leg, agent)
+              const text = 'identity verified after caller ID was withheld'
+              store.addEvent({ code, kind: 'identify', who: agent, text })
+              this.emit({ type: 'identify', code, who: agent, text, callers: this.line?.callersIn(code) ?? 0, at: Date.now() })
+              return ''
+            },
             onJoin: (code, who, info) => {
               // A phone the room rang has no caller number on its leg: it is the number we dialled, so a
               // known caller rung in (Anthony) is named and trusted like one who dialled in.

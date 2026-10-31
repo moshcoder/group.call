@@ -187,7 +187,7 @@ export function roomPage(ctx: Ctx, data: { room: Room; owner: boolean; live: { n
     : '<li class="empty muted">Nobody on the line.</li>'
   const log = data.events.length
     ? data.events
-        .map((e) => `<li><span class="muted">${esc(when(e.at).slice(11, 16))}</span> ${esc(e.who)} ${e.kind === 'join' ? 'joined' : e.kind === 'leave' ? 'left' : e.kind === 'invite' || e.kind === 'quality' ? esc(e.text) : `said: “${esc(e.text)}”`}</li>`)
+        .map((e) => `<li><span class="muted">${esc(when(e.at).slice(11, 16))}</span> ${esc(e.who)} ${e.kind === 'join' ? 'joined' : e.kind === 'leave' ? 'left' : e.kind === 'identify' ? esc(e.text) : e.kind === 'invite' || e.kind === 'quality' ? esc(e.text) : `said: “${esc(e.text)}”`}</li>`)
         .join('')
     : '<li class="muted">Nothing yet.</li>'
   const ownerTools = data.owner

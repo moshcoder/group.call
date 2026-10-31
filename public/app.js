@@ -40,7 +40,7 @@
         ? e.live.map((p) => `<li class="${esc(p.kind)}"><span class="dot" aria-hidden="true"></span>${esc(p.name)} <span class="muted">${p.kind === 'agent' ? 'agent' : 'on the phone'}</span></li>`).join('')
         : '<li class="empty muted">Nobody on the line.</li>'
       if (e.type === 'hello') return
-      const what = e.type === 'join' ? 'joined' : e.type === 'leave' ? 'left' : e.type === 'invite' ? esc(e.text) : `said: “${esc(e.text)}”`
+      const what = e.type === 'join' ? 'joined' : e.type === 'leave' ? 'left' : e.type === 'invite' || e.type === 'identify' ? esc(e.text) : `said: “${esc(e.text)}”`
       const li = document.createElement('li')
       li.innerHTML = `<span class="muted">${time(e.at)}</span> ${esc(e.who)} ${what}`
       if (log.children.length === 1 && log.firstElementChild.classList.contains('muted')) log.firstElementChild.remove()
