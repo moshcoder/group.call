@@ -12,7 +12,7 @@
   "bin": {
     "groupcall": "bin/groupcall"
   },
-  "files": ["bin/groupcall", "src", "public", "README.md", "LICENSE"],
+  "files": ["bin/groupcall", "src", "personas", "public", "README.md", "LICENSE"],
   "engines": {
     "bun": ">=1.1"
   },

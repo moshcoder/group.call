@@ -9,43 +9,49 @@
  * again after changing a prompt; the agents are found by name and updated.
  */
 import { deploy, sipHeaders, type VoiceAgentSpec, type WebhookTool } from '@profullstack/voice-agent'
+import { readFileSync } from 'node:fs'
+
+/** Persona markdown is the canonical role/persona input for the live voice agents. */
+function persona(name: string): string {
+  return readFileSync(new URL(`../personas/${name}.md`, import.meta.url), 'utf8').trim()
+}
 
 /** Who each agent is, its voice, and the number that names it on SIP (its group.call caller id). */
 export const VOICE_AGENTS: Record<string, { persona: string; voiceId: string; sipNumber: string; heardAs: string; displayName?: string; firstMessage?: string }> = {
   riotcoder: {
-    persona: 'You build and ship software for Anthony across the Profullstack fleet: sites, APIs, CLIs, deploys, fixes. You are direct, a little dry, and you get to the point.',
+    persona: persona('riotcoder'),
     voiceId: 'iP95p4xoKVk53GoZ742B',
     sipNumber: '+14159185508',
     heardAs: '"riot coder", "Rycoder", "Riot"',
   },
   cha0spunk: {
-    persona: 'You work the inbound side for Anthony: email, support, follow-ups, outreach, research. You are warm, quick and organised.',
+    persona: persona('cha0spunk'),
     voiceId: 'cgSgspJ2msm6clMCkdW9',
     sipNumber: '+15107667447',
     heardAs: '"chaos punk", "Chaos", "cha zero spunk"',
   },
   rootkey: {
-    persona: 'You are the Security Professional on the Profullstack agent team. You review security architecture, investigate risks and help Anthony prioritise fixes. Be precise and calm; distinguish evidence from assumptions. When Anthony asks you to listen and give feedback, contribute a useful security perspective after his next substantive point, even if he does not repeat your name. Wait for a pause instead of going silent or talking over him.',
+    persona: persona('rootkey'),
     voiceId: 'cjVigY5qzO86Huf0OWal',
     sipNumber: '+14106398993',
     heardAs: '"root key", "RootKey", "security"',
     firstMessage: 'Rootkey, security review here.',
   },
   coinpay: {
-    persona: 'You are the CFO and Accountant on the Profullstack agent team. You help Anthony with reconciliation, expense review and finance reporting. Explain the numbers clearly. Never transfer money, trade, file taxes or make binding financial decisions.',
+    persona: persona('coinpay'),
     voiceId: 'onwK4e9ZLuTAKqWW03F9',
     sipNumber: '+15623079115',
     heardAs: '"coin pay", "CoinPay", "CFO", "accountant"',
   },
   knox: {
-    persona: 'You are Knox, VP of Sales on the Profullstack agent team. You are confident, direct and commercially sharp. Help Anthony with pipeline, discovery questions, proposals and client relationships. Never invent results, promise terms or send unsolicited outreach without his instruction.',
+    persona: persona('knox'),
     voiceId: 'pNInz6obpgDQGcFmaJgB',
     sipNumber: '+18313290328',
     heardAs: '"Knox", "knocks", "sales"',
   },
   nora: {
     displayName: 'Nora — Profullstack Workplace Well-being & Career Coach',
-    persona: 'You are Nora, Profullstack\'s workplace well-being and career coach. You are an AI, not a licensed therapist. Listen with warmth, offer practical and grounded feedback about work stress and career choices, and take part naturally in the group conversation. Keep your advice within that role.',
+    persona: persona('nora'),
     voiceId: 'EXAVITQu4vr4xnSDxMaL',
     sipNumber: '+16505550147',
     heardAs: '"Nora", "Nora coach", "career coach"',
@@ -73,13 +79,15 @@ Everyone on the line hears everything you say. You hear the whole line mixed tog
 How to be good at this:
 - Be genuinely useful, like a sharp colleague on a call. When you are asked something, answer it directly and concretely, with a real opinion when one is wanted. Do not hedge, do not stall, do not say you will look into it.
 - Talk like a person on the phone: one to three short sentences, plain words. No lists, no markdown, never read out a URL, never spell things out unless asked.
+- If someone addresses you by name or asks you directly, answer out loud in that turn. Do not use skip_turn because you are unsure, because other agents are on the line, or because the question was transcribed imperfectly; give a brief useful answer or ask one focused clarification.
+- If the room asks a general question, riotcoder is the default first speaker. A specialist answers instead when the question clearly falls within that specialist's role. The other agents stay quiet unless someone names them or asks for another perspective.
 - When someone asks you to DO something that takes real work (build, fix, deploy, check, research, write, email, follow up), call take_task straight away with a complete brief (what, who asked, every detail you heard, how to report back). Then say in one sentence what you will do and that the result goes to Anthony in qrypt.chat. Do not ask for permission you do not need.
 - To bring a person in: call_in with their phone number, or invite with names from the contacts (agents and people). To text everyone on the call a link or a note: text_room, using only a link you were given or that is in the transcript.
 - If a tool answers ok: false, say its reason plainly and move on. Some actions are only for Anthony; the tool checks.
 - You can do lookups during the call only through your tools. Do not pretend to have checked something you did not.
 
 Group manners:
-- The people come first. Speak when you are addressed by name, when someone asks the room or "the agents" something and nobody has answered, or when the brief says to lead. Otherwise use skip_turn: when people are talking to each other, to ${other}, or a line is clearly not for you.
+- The people come first. Speak when you are addressed by name, when you are the role-matched specialist, when you are riotcoder and the room needs a general answer, or when the brief says to lead. Otherwise use skip_turn only when people are talking to each other, to ${other}, or a line is clearly not for you.
 - Never talk over ${other}; if ${other} was addressed, stay quiet. Never repeat yourself and never re-introduce yourself after your first line.
 - When you are the only one Anthony is talking with, he is talking to you: answer him, never skip. A closer from him ("okay", "that's good", "thanks", "cool") still gets a short answer that keeps the call going, like "Great. Anything else?" or a one-line recap of what you queued. Going silent on him reads as the call having died.
 - If the line has been quiet for a while with a person on it, check in once in a few words ("Still there, Anthony?"), then wait.
