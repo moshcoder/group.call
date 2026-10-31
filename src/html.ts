@@ -173,8 +173,9 @@ ${dialBlock(ctx)}`,
 
 const lineHtml = (l: Line) => `<li class="${esc(l.kind)}"><span class="muted">${esc(when(l.at).slice(11, 16))}</span> <b>${esc(l.who)}</b>${l.kind === 'typed' ? ' <span class="muted">(typed)</span>' : ''} ${esc(l.text)}</li>`
 
-export function roomPage(ctx: Ctx, data: { room: Room; owner: boolean; live: { name: string; kind: string; since: number }[]; events: RoomEvent[]; invites: AgentInvite[]; transcript: Line[]; recordings?: Recording[]; canRecord?: boolean; flash?: string; error?: string }): string {
+export function roomPage(ctx: Ctx, data: { room: Room; owner: boolean; live: { name: string; kind: string; since: number }[]; events: RoomEvent[]; invites: AgentInvite[]; transcript: Line[]; contacts?: (Contact & { builtin?: boolean })[]; recordings?: Recording[]; canRecord?: boolean; flash?: string; error?: string }): string {
   const r = data.room
+  const agentContacts = (data.contacts ?? []).filter((c) => !c.builtin && c.kind === 'agent')
   const people = data.live.length
     ? data.live.map((p) => `<li class="${esc(p.kind)}"><span class="dot" aria-hidden="true"></span>${esc(p.name)} <span class="muted">${p.kind === 'agent' ? 'agent' : 'on the phone'}</span></li>`).join('')
     : '<li class="empty muted">Nobody on the line.</li>'
@@ -223,6 +224,14 @@ ${
   <div class="agents">${Object.entries(AGENTS)
     .map(([name, a]) => `<form method="post" action="/r/${esc(r.code)}/invite">${csrfField(ctx)}<input type="hidden" name="agent" value="${esc(name)}"><button class="secondary">Invite ${esc(name)}</button><span class="muted small">${esc(a.about)}</span></form>`)
     .join('')}</div>
+  ${agentContacts.length ? `<h3>Your agents</h3>
+  <p class="muted small">Saved voice agents from your contacts. Invite one directly into this room.</p>
+  <div class="agents">${agentContacts
+    .map((contact) => {
+      const route = contact.agent ? 'group.call agent' : contact.sip ? 'SIP voice agent' : contact.phone ? 'phone voice agent' : 'email invitation'
+      return `<form method="post" action="/r/${esc(r.code)}/invite">${csrfField(ctx)}<input type="hidden" name="names" value="${esc(contact.name)}"><button class="secondary">Invite ${esc(contact.name)}</button><span class="muted small">${route}</span></form>`
+    })
+    .join('')}</div>` : ''}
   <h3>Greeter</h3>
   <p class="muted small">${r.greeter ? `${esc(r.greeter)} waits with anyone who dials in before ${esc(hostLabel(r))}, talks with them, and leaves when the host joins.` : 'An agent that dials in when somebody arrives before the host, keeps them company, and leaves when the host joins.'}</p>
   <form method="post" action="/r/${esc(r.code)}/greeter" class="row">${csrfField(ctx)}<select name="greeter" aria-label="Greeter"><option value="off">No greeter</option>${Object.keys(AGENTS)
