@@ -1170,6 +1170,17 @@ export class GroupCallService {
       return
     }
     const room = this.store.room(code)
+    if (room && shown.kind === 'person') {
+      // An invitee leaves after three minutes if nobody has arrived. Bring that
+      // team back when the host joins, rather than leaving stale names behind.
+      for (const previous of this.store.invites(code, 50)) {
+        if (previous.status !== 'done' || !/\bnobody came\b/i.test(previous.note) || Date.now() - previous.createdAt > 15 * 60_000) continue
+        if (AGENTS[previous.agent]) {
+          this.store.finishInvite(previous.id, 'done', 'requeued after host arrival')
+          this.queueAgent(room, previous.agent, previous.sub)
+        }
+      }
+    }
     const greeter = room?.greeter
     if (!room || !greeter || !this.config.agentSip?.[greeter] || !this.hostHere(code)) return
     // It hears the host arrive and hands over itself (its prompt says so); if it has not left in 45 s, it is shown out.
