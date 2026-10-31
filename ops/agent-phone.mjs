@@ -69,6 +69,18 @@ export function roomQuestion(text) {
 		|| /^(?:you(?: all| guys)?|everybody|everyone)\s+(?:hear|listen|understand|there|on the line)\b/i.test(body)
 		|| isGreeting;
 }
+export function roomQuestionFallback(question) {
+	const body = roomBody(question);
+	if (/^(?:what was that|what did you say|what was that about)\b/i.test(body))
+		return "Sorry, I missed what you meant. Could you repeat the part you want me to explain?";
+	return "I heard your question, but my answer didn't come through. Could you ask it again?";
+}
+export function weakRoomAnswer(question, answer) {
+	const response = String(answer).trim().replace(/[.!?]+$/, '');
+	if (!/^(?:i'?m here(?: and listening| and ready to assist)?|i'?m listening|here and listening)$/i.test(response)) return false;
+	return !/\b(?:are you there|can (?:anyone|anybody|you) hear|who(?:'s| is) here|is anyone there)\b/i.test(String(question));
+}
+const roomBody = (text) => String(text).replace(/(^|\s)[^:\s]*( ending \d+)?:\s*/g, ' ').trim();
 const QUIET_MS = 1000; // speak once they have paused this long (1.5 s on a group call: more voices, longer gaps)
 const TURN_CWD = `${HOME}/.local/share/agent-phone/turn-cwd`;
 mkdirSync(TURN_CWD, { recursive: true });
@@ -120,6 +132,14 @@ export const addressed = (agent, text) => {
 		}
 	return false;
 };
+export function shouldConsiderRoomTurn(agent, text, { firstTurn = false, greeter = false, podcast = false } = {}) {
+	if (firstTurn || greeter || podcast) return true;
+	const mine = addressed(agent, text);
+	const someoneElse = Object.keys(NAME_ALIASES).some((other) => other !== agent && addressed(other, text));
+	if (someoneElse && !mine) return false;
+	const body = roomBody(text);
+	return mine || roomQuestion(body) || looksLikeGoodbye(body);
+}
 /**
  * The floor, shared by our agents on this box: one file per room, touched by whoever
  * speaks. A line meant for nobody in particular gets one agent answering, not two.
@@ -166,13 +186,13 @@ function withFloorLock(pin, update) {
 }
 
 /** Hold the floor for about as long as the line takes to say (roughly 14 chars a second). */
-export function takeFloor(pin, agent, text = '') {
+export function takeFloor(pin, agent, text = '', minimumMs = 0) {
 	try {
 		return withFloorLock(pin, () => {
 			if (floorTakenByOther(pin, agent)) return false;
 			const file = floorFile(pin);
 			const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-			writeFileSync(temp, JSON.stringify({ agent, at: Date.now(), until: Date.now() + 2500 + (String(text).length / 14) * 1000 }));
+			writeFileSync(temp, JSON.stringify({ agent, at: Date.now(), until: Date.now() + Math.max(minimumMs, 2500 + (String(text).length / 14) * 1000) }));
 			renameSync(temp, file);
 			return true;
 		});
@@ -603,7 +623,7 @@ async function main() {
 		if (addressed(agent, newest)) return `\n\nTHE NEWEST LINE IS ADDRESSED TO YOU (${agent}; the name is misspelled by speech recognition). Answer it now with SAY. Do not PASS.`;
 		const other = Object.keys(NAME_ALIASES).find((o) => o !== agent && addressed(o, newest));
 		if (other) return `\n\nThe newest line is addressed to ${other}, not you: PASS.`;
-		if (roomQuestion(newest)) return '\n\nTHE NEWEST LINE IS A PERSON ASKING THE ROOM (that includes you). Answer it now with SAY, briefly, even if a similar question was answered earlier in the call. Do not PASS.';
+		if (roomQuestion(newest)) return '\n\nTHE NEWEST LINE IS A PERSON ASKING THE ROOM (that includes you). Answer the substance of their question now with SAY, briefly, even if a similar question was answered earlier in the call. Do not PASS. Do not just say you are here or listening unless that is what they asked.';
 		return '';
 	}
 
@@ -619,7 +639,23 @@ async function main() {
 			}
 		}
 		thinking = true;
+		let reservedQuestionFloor = false;
 		try {
+			const newest = join ? recentSpeech() : '';
+			const firstTurn = join && shouldIntroduce(agent, transcript, Date.now());
+			if (join && !shouldConsiderRoomTurn(agent, newest, { firstTurn, greeter, podcast: a.podcast })) return;
+			const mine = addressed(agent, newest);
+			const namedToAnother = join && !a.podcast && Object.keys(NAME_ALIASES).some((other) => other !== agent && addressed(other, newest)) && !mine;
+			if (namedToAnother) return;
+			const roomQuestionTurn = join && !a.podcast && roomQuestion(newest) && !mine && !greeter;
+			const greetingTurn = firstTurn && !roomQuestionTurn;
+			if (roomQuestionTurn) {
+				// Elect one agent before asking any model, avoiding six simultaneous model calls.
+				const waitUntil = Date.now() + 8000;
+				while (Date.now() < waitUntil && !ended && (floorTakenByOther(a.pin, agent) || Date.now() - lastVoice < 2000)) await new Promise((r) => setTimeout(r, 150));
+				if (ended || !takeFloor(a.pin, agent, '', 60_000)) return;
+				reservedQuestionFloor = true;
+			}
 			// Re-read each turn, so a prompt fix reaches agents already on a call.
 			let current = template;
 			try {
@@ -634,22 +670,28 @@ async function main() {
 				.replace('{room}', join ? `"${a.room || 'a group call'}", code ${a.pin}, on ${to}.${addressedHint()}` : '')
 				.replace('{transcript}', transcript.map((t) => `${t.who === 'them' ? (join ? 'room' : 'them') : t.who === agent ? `${agent} (you)` : `${t.who} (the other agent)`}: ${t.text}`).join('\n') || '(the call just connected; nobody has spoken yet)')
 				.replace('{now}', `It is ${new Date().toUTCString()}. The call has lasted ${Math.round((Date.now() - started) / 1000)} s of at most ${maxMinutes * 60} s.`)
-				.replace('{intro}', !shouldIntroduce(agent, transcript, Date.now())
+				.replace('{intro}', !firstTurn
 					? 'You have already introduced yourself on this call: do not do it again.'
-					: join && rejoin
+					: roomQuestionTurn
+						? 'A person asked the room a question as you joined. Answer the substance of it now; do not replace the answer with a generic introduction or listening line.'
+						: join && rejoin
 						? 'You were on this call earlier and just reconnected; the transcript above is what was said. Do NOT introduce yourself again and do not announce that you are back unless someone asks. Otherwise follow the rules below as usual: answer people when they talk to you or ask the room something.'
 						: join
 						? `You just joined. Unless someone is mid-sentence, say a short hello: "Hi everyone, ${agent} here, Anthony's AI agent." Do not PASS on this first turn.`
 						: `In this first line, say who you are: "Hi, this is ${agent}, an AI assistant calling for Anthony."`);
 			const t0 = Date.now();
 			const heardBefore = transcript.filter((t) => t.who === 'them').length;
-			const firstTurn = join && shouldIntroduce(agent, transcript, Date.now());
-			let raw = firstTurn && !a.podcast ? `SAY: ${agentIntro(agent)}` : await brain(agent, prompt);
+			let raw = greetingTurn && !a.podcast ? `SAY: ${agentIntro(agent)}` : await brain(agent, prompt);
 			let { kind, text, brief: turnBrief, number: callNumber, message: textMessage } = parseTurn(raw);
-			if (firstTurn && !text && !ended) {
+			if (greetingTurn && !text && !ended) {
 				// The hello is not optional: one more try before going quiet.
 				raw = await brain(agent, prompt);
 				({ kind, text, brief: turnBrief, number: callNumber, message: textMessage } = parseTurn(raw));
+			}
+			if (roomQuestionTurn && (kind === 'pass' || !text || (kind === 'say' && weakRoomAnswer(newest, text)))) {
+				text = roomQuestionFallback(newest);
+				kind = 'say';
+				appendFileSync(logFile, `${new Date().toISOString().slice(11, 19)} [room-question fallback]\n`);
 			}
 			try {
 				appendFileSync(logFile, `${new Date().toISOString().slice(11, 19)} [turn ${Date.now() - t0} ms] ${text ? kind.toUpperCase() : raw.trim() ? 'PASS' : 'EMPTY (model failed or timed out)'}\n`);
@@ -738,6 +780,7 @@ async function main() {
 			await speak(text);
 			if (hangupAfterSpeech) setTimeout(hangup, 15_000).unref(); // in case speak.ended never comes
 		} finally {
+			if (reservedQuestionFloor && !speaking) releaseFloor(a.pin, agent);
 			thinking = false;
 			if (staleRetry && !ended) {
 				staleRetry = false;

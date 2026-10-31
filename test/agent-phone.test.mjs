@@ -62,11 +62,18 @@ test('room questions work when transcription omitted punctuation', () => {
   assert.equal(worker.roomQuestion('Anthony: What was that'), true);
   assert.equal(worker.roomQuestion('Anthony: How does this work?'), true);
   assert.equal(worker.roomQuestion('Anthony: I told everyone to listen'), false);
+  assert.equal(worker.roomQuestionFallback('Anthony: What was that?'), "Sorry, I missed what you meant. Could you repeat the part you want me to explain?");
+  assert.equal(worker.weakRoomAnswer('Anthony: What was that?', "I'm here and listening."), true);
+  assert.equal(worker.weakRoomAnswer('Anthony: Can you hear me?', "I'm here and listening."), false);
+  assert.equal(worker.shouldConsiderRoomTurn('riotcoder', 'Anthony: I said no.'), false);
+  assert.equal(worker.shouldConsiderRoomTurn('riotcoder', 'Anthony: What was that?'), true);
+  assert.equal(worker.shouldConsiderRoomTurn('nora', 'Anthony: Nora, are you there?'), true);
+  assert.equal(worker.shouldConsiderRoomTurn('riotcoder', 'Anthony: Nora, are you there?'), false);
 });
 
 test('only one agent can claim the room floor until it releases it', () => {
   const pin = `floor-test-${process.pid}`;
-  assert.equal(worker.takeFloor(pin, 'riotcoder', 'I will answer.'), true);
+  assert.equal(worker.takeFloor(pin, 'riotcoder', 'I will answer.', 60_000), true);
   assert.equal(worker.floorHolder(pin), 'riotcoder');
   assert.equal(worker.takeFloor(pin, 'nora', 'I will also answer.'), false);
   worker.releaseFloor(pin, 'riotcoder');
