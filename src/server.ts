@@ -293,7 +293,7 @@ export function createApp(deps: Deps) {
   })
 
   const roomView = (c: Context, user: User, room: Room, extra: { flash?: string; error?: string } = {}, status = 200) =>
-    page(c, roomPage(ctxOf(c), { room, owner: room.sub === user.sub, live: svc.live(room.code), events: svc.events(room.code), invites: store.invites(room.code), transcript: store.transcript(room.code, { limit: 200 }), recordings: store.recordings(room.code), canRecord: svc.canRecord, ...extra }), status)
+    page(c, roomPage(ctxOf(c), { room, owner: room.sub === user.sub, live: svc.live(room.code), events: svc.events(room.code), invites: store.invites(room.code), transcript: store.transcript(room.code, { limit: 200 }), contacts: svc.book(user), recordings: store.recordings(room.code), canRecord: svc.canRecord, ...extra }), status)
 
   app.get('/r/:code', (c) => {
     const user = need(c, `r/${codeParam(c)}`)
