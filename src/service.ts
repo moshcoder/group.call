@@ -986,7 +986,7 @@ export class GroupCallService {
    * Link an account's smshub.dev (an smshub_ API key, and optionally which of its numbers to text
    * from): its rooms' group texts then go out through smshub as a group. The key is checked first.
    */
-  async linkSmshub(user: User, input: { key?: string; from?: string; relay?: boolean }): Promise<{ linked: true; from: string | null; relay: boolean; groups: number }> {
+  async linkSmshub(user: Pick<User, 'sub'>, input: { key?: string; from?: string; relay?: boolean; coinpaySub?: string }): Promise<{ linked: true; from: string | null; relay: boolean; groups: number }> {
     const key = String(input.key ?? '').trim()
     if (!/^smshub_[A-Za-z0-9_-]{8,}$/.test(key)) throw new UserError('Paste an smshub API key (smshub_..., from smshub.dev Settings > API Keys).', 'key')
     const from = input.from ? normalNumber(String(input.from)) : ''
@@ -995,11 +995,19 @@ export class GroupCallService {
     if (!res || res.status === 401 || res.status === 403) throw new UserError('smshub did not accept that key.', 'key')
     if (!res.ok) throw new UserError(`smshub answered ${res.status}; try again in a minute.`, 'key', 502)
     const j = (await res.json().catch(() => ({}))) as { groups?: unknown[] }
+    if (input.coinpaySub) {
+      const identityResponse = await (this.config.fetch ?? fetch)(`${base}/api/v1/integrations/groupcall/identity`, {
+        headers: { authorization: `Bearer ${key}` },
+      }).catch(() => null)
+      if (!identityResponse?.ok) throw new UserError('Connect the same CoinPay account to SMSHub first.', 'key', 403)
+      const identity = (await identityResponse.json().catch(() => ({}))) as { coinpay_sub?: string }
+      if (identity.coinpay_sub !== input.coinpaySub) throw new UserError('The SMSHub and group.call CoinPay accounts do not match.', 'key', 403)
+    }
     this.store.setSmshubLink(user.sub, { key, from: from || null, relay: input.relay === true })
     return { linked: true, from: from || null, relay: input.relay === true, groups: j.groups?.length ?? 0 }
   }
 
-  unlinkSmshub(user: User): { linked: false } {
+  unlinkSmshub(user: Pick<User, 'sub'>): { linked: false } {
     this.store.setSmshubLink(user.sub, null)
     return { linked: false }
   }
