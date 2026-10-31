@@ -14,8 +14,8 @@
  * ~/.config/groupcall/worker.env) and runs `join` for each, reporting back.
  *
  * Telnyx Call Control places the call, transcribes the room, and speaks through
- * Telnyx TTS. The worker voice can be overridden per environment, so it keeps
- * talking through AWS Polly while the ElevenLabs workspace is out of quota. This
+ * Telnyx TTS. Each agent has a distinct AWS Polly fallback voice, so they remain
+ * recognizable while the ElevenLabs workspace is out of quota. This
  * box cannot take webhooks, so Telnyx posts them to
  * qrypt.chat (/api/phone/agent-webhook) and we long-poll them back
 * (/api/phone/agent-events, AGENT_PHONE_SECRET). Each turn is a quick read-only
@@ -44,7 +44,20 @@ const CALLER_ID = envVal(`${HOME}/www/qrypt.chat/app.env`, 'PHONE_CALLER_ID') ||
 const EVENTS = 'https://qrypt.chat/api/phone/agent-events';
 const VOICES = { riotcoder: 'iP95p4xoKVk53GoZ742B', cha0spunk: 'cgSgspJ2msm6clMCkdW9' }; // ElevenLabs Chris, Jessica
 export const FALLBACK_VOICE = 'AWS.Polly.Matthew-Neural';
-export function voiceFor(agent, override = '') { return override || (VOICES[agent] ? `ElevenLabs.Default.${VOICES[agent]}` : FALLBACK_VOICE); }
+export const POLLY_VOICES = {
+	riotcoder: 'AWS.Polly.Matthew-Neural',
+	cha0spunk: 'AWS.Polly.Joanna-Neural',
+	rootkey: 'AWS.Polly.Stephen-Neural',
+	coinpay: 'AWS.Polly.Danielle-Neural',
+	knox: 'AWS.Polly.Joey-Neural',
+	nora: 'AWS.Polly.Ruth-Neural',
+};
+export function fallbackVoiceFor(agent) { return POLLY_VOICES[agent] || FALLBACK_VOICE; }
+export function voiceFor(agent, override = '', skipElevenLabs = false) {
+	if (override) return override;
+	if (!skipElevenLabs && VOICES[agent]) return `ElevenLabs.Default.${VOICES[agent]}`;
+	return fallbackVoiceFor(agent);
+}
 export function speechRequest(text, voice) {
 	const request = { payload: text, voice };
 	if (voice.startsWith('ElevenLabs.')) request.voice_settings = { api_key_ref: 'qrypt_elevenlabs' };
@@ -132,6 +145,13 @@ export const addressed = (agent, text) => {
 		}
 	return false;
 };
+export function shouldFallbackRoomResponse(agent, question, answer) {
+	const mine = addressed(agent, question);
+	const directedElsewhere = Object.keys(NAME_ALIASES).some((other) => other !== agent && addressed(other, question));
+	return !(directedElsewhere && !mine)
+		&& (roomQuestion(question) || mine)
+		&& (!String(answer || '').trim() || weakRoomAnswer(question, answer));
+}
 export function shouldConsiderRoomTurn(agent, text, { firstTurn = false, greeter = false, podcast = false } = {}) {
 	if (firstTurn || greeter || podcast) return true;
 	const mine = addressed(agent, text);
@@ -424,7 +444,8 @@ async function main() {
 		})();
 	const turnTemplate = join ? (a.podcast ? 'podcast-turn.md' : 'group-turn.md') : 'phone-turn.md';
 	const template = read(`${HOME}/.config/qc-agents/${turnTemplate}`);
-	const voice = voiceFor(agent, fromWorkerEnv('AGENT_PHONE_VOICE') || '');
+	const skipElevenLabs = /^(?:1|true|yes)$/i.test(fromWorkerEnv('AGENT_PHONE_SKIP_ELEVENLABS') || '');
+	const voice = voiceFor(agent, fromWorkerEnv('AGENT_PHONE_VOICE') || '', skipElevenLabs);
 	const transcript = [];
 	const started = Date.now();
 	const logFile = `${CALL_LOGS}/${new Date().toISOString().replace(/[:.]/g, '-')}-${agent}-${join ? a.pin : to.replace(/\D/g, '')}.log`;
@@ -565,9 +586,10 @@ async function main() {
 			await act('speak', request);
 		} catch (e) {
 			if (voice.startsWith('ElevenLabs.')) {
-				if (!a.json) console.error(`(ElevenLabs voice failed: ${e.message}; using ${FALLBACK_VOICE})`);
+				const fallback = fallbackVoiceFor(agent);
+				if (!a.json) console.error(`(ElevenLabs voice failed: ${e.message}; using ${fallback})`);
 				try {
-					await act('speak', { payload: text, voice: FALLBACK_VOICE });
+					await act('speak', { payload: text, voice: fallback });
 				} catch (fallbackError) {
 					clearTimeout(speakWatchdog);
 					speaking = false;
@@ -688,7 +710,7 @@ async function main() {
 				raw = await brain(agent, prompt);
 				({ kind, text, brief: turnBrief, number: callNumber, message: textMessage } = parseTurn(raw));
 			}
-			if (roomQuestionTurn && (kind === 'pass' || !text || (kind === 'say' && weakRoomAnswer(newest, text)))) {
+			if ((roomQuestionTurn || mine || greeter) && shouldFallbackRoomResponse(agent, newest, text)) {
 				text = roomQuestionFallback(newest);
 				kind = 'say';
 				appendFileSync(logFile, `${new Date().toISOString().slice(11, 19)} [room-question fallback]\n`);
