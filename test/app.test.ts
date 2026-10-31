@@ -472,6 +472,20 @@ test('an invite stuck "dialling" from an agent that never arrived does not block
   expect(store.invite(first.id)?.status).toBe('failed')
 })
 
+test('agents who timed out before the host arrived are dialled back into the room', async () => {
+  const { call, event, store, telnyx } = setup({ agentSip: { riotcoder: 'sip:+15106169327@sip.rtc.elevenlabs.io' } })
+  const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Late host' })).json()) as any
+  const expired = store.addInvite({ code: room.code, agent: 'riotcoder', sub: 'sub-op' })
+  store.finishInvite(expired.id, 'done', 'on the call 182 s, nobody came')
+
+  await event('call.initiated', { call_control_id: 'late-host', direction: 'incoming', from: '+15550001111' })
+  await event('call.gather.ended', { call_control_id: 'late-host', digits: room.code })
+
+  expect(store.invite(expired.id)?.note).toBe('requeued after host arrival')
+  expect(store.invites(room.code, 10).some((invite) => invite.id !== expired.id && invite.agent === 'riotcoder')).toBe(true)
+  expect(telnyx.calls.some((c) => c.path === '/calls' && c.body.to.includes('sip.rtc.elevenlabs.io'))).toBe(true)
+})
+
 test("a known caller is named, and agents can see which recent lines came from someone trusted", async () => {
   const keys = telnyxKeys()
   const telnyx = telnyxRecorder()

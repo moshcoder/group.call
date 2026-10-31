@@ -58,7 +58,22 @@ test('a recent line from the same agent suppresses a duplicate intro on a fast r
 test('room questions work when transcription omitted punctuation', () => {
   assert.equal(worker.roomQuestion('Anthony: Who’s here'), true);
   assert.equal(worker.roomQuestion('Anthony: Can you guys hear me'), true);
+  assert.equal(worker.roomQuestion('Anthony: What was that?'), true);
+  assert.equal(worker.roomQuestion('Anthony: What was that'), true);
+  assert.equal(worker.roomQuestion('Anthony: How does this work?'), true);
   assert.equal(worker.roomQuestion('Anthony: I told everyone to listen'), false);
+});
+
+test('only one agent can claim the room floor until it releases it', () => {
+  const pin = `floor-test-${process.pid}`;
+  assert.equal(worker.takeFloor(pin, 'riotcoder', 'I will answer.'), true);
+  assert.equal(worker.floorHolder(pin), 'riotcoder');
+  assert.equal(worker.takeFloor(pin, 'nora', 'I will also answer.'), false);
+  worker.releaseFloor(pin, 'riotcoder');
+  assert.equal(worker.takeFloor(pin, 'nora', 'I will answer now.'), true);
+  assert.equal(worker.floorHolder(pin), 'nora');
+  worker.releaseFloor(pin, 'nora');
+  assert.equal(worker.floorHolder(pin), '');
 });
 
 test('the name the listener hears addresses only that agent', () => {

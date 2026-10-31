@@ -26,7 +26,7 @@
  */
 import { execFile, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { appendFileSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 
 const HOME = process.env.AGENT_PHONE_HOME || process.env.HOME || '/home/anthony';
 const read = (p) => readFileSync(p, 'utf8');
@@ -64,9 +64,10 @@ export function shouldIntroduce(agent, transcript, now = Date.now(), recentMs = 
 export function roomQuestion(text) {
 	const body = String(text).replace(/(^|\s)[^:\s]*( ending \d+)?:\s*/g, ' ').trim();
 	const isGreeting = /^(hello|hi|hey)[\s,.!]*$/i.test(body);
-	const soundsLikeQuestion = /[?]\s*$/.test(body) || /^(who|what|can|could|are|is|anyone|anybody)\b/i.test(body) || isGreeting;
-	if (!soundsLikeQuestion) return false;
-	return /\b(any ?one|any ?body|every ?one|everybody|you guys|you all|y'?all|agents?|bots?|can you hear|are you there|is anyone|hello|still there|who(?:['’]s| is| are)? (?:here|there|you|on the line)|what(?:['’]s| is) happening)\b/i.test(body);
+	return /[?]\s*$/.test(body)
+		|| /^(who|what|when|where|why|which|how|can|could|are|is|anyone|anybody|do|does|did|will|would|should|have|has)\b/i.test(body)
+		|| /^(?:you(?: all| guys)?|everybody|everyone)\s+(?:hear|listen|understand|there|on the line)\b/i.test(body)
+		|| isGreeting;
 }
 const QUIET_MS = 1000; // speak once they have paused this long (1.5 s on a group call: more voices, longer gaps)
 const TURN_CWD = `${HOME}/.local/share/agent-phone/turn-cwd`;
@@ -124,8 +125,9 @@ export const addressed = (agent, text) => {
  * speaks. A line meant for nobody in particular gets one agent answering, not two.
  */
 const floorFile = (pin) => `${CALL_LOGS}/floor-${pin}.json`;
+const floorLockDir = (pin) => `${floorFile(pin)}.lock`;
 /** Who holds the floor in this room right now (an agent mid-sentence), or ''. */
-function floorHolder(pin) {
+export function floorHolder(pin) {
 	try {
 		const f = JSON.parse(readFileSync(floorFile(pin), 'utf8'));
 		return f.until > Date.now() ? String(f.agent) : '';
@@ -137,11 +139,44 @@ const floorTakenByOther = (pin, agent) => {
 	const h = floorHolder(pin);
 	return h !== '' && h !== agent;
 };
-/** Hold the floor for about as long as the line takes to say (ElevenLabs reads ~14 chars a second). */
-function takeFloor(pin, agent, text = '') {
+
+/** Run a short floor-file update under an atomic directory lock shared by call workers. */
+function withFloorLock(pin, update) {
+	const lock = floorLockDir(pin);
+	let locked = false;
 	try {
-		writeFileSync(floorFile(pin), JSON.stringify({ agent, at: Date.now(), until: Date.now() + 2500 + (String(text).length / 14) * 1000 }));
-	} catch {}
+		mkdirSync(lock);
+		locked = true;
+	} catch (e) {
+		if (e?.code !== 'EEXIST') return false;
+		try {
+			if (Date.now() - statSync(lock).mtimeMs > 10_000) {
+				rmSync(lock, { recursive: true, force: true });
+				mkdirSync(lock);
+				locked = true;
+			}
+		} catch {}
+	}
+	if (!locked) return false;
+	try {
+		return update();
+	} finally {
+		rmSync(lock, { recursive: true, force: true });
+	}
+}
+
+/** Hold the floor for about as long as the line takes to say (roughly 14 chars a second). */
+export function takeFloor(pin, agent, text = '') {
+	try {
+		return withFloorLock(pin, () => {
+			if (floorTakenByOther(pin, agent)) return false;
+			const file = floorFile(pin);
+			const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
+			writeFileSync(temp, JSON.stringify({ agent, at: Date.now(), until: Date.now() + 2500 + (String(text).length / 14) * 1000 }));
+			renameSync(temp, file);
+			return true;
+		});
+	} catch { return false; }
 }
 /** The other agent speaking now or within `afterMs` of finishing: its words, not a person's. */
 function otherAgentTalking(pin, agent, afterMs = 1500) {
@@ -173,12 +208,17 @@ function floorHolderRecently(pin, agent, withinMs = 6000) {
 		return false;
 	}
 }
-function releaseFloor(pin, agent) {
+export function releaseFloor(pin, agent) {
 	try {
-		if (floorHolder(pin) === agent) {
+		withFloorLock(pin, () => {
+			if (floorHolder(pin) !== agent) return false;
 			const f = JSON.parse(readFileSync(floorFile(pin), 'utf8'));
-			writeFileSync(floorFile(pin), JSON.stringify({ ...f, until: 0 }));
-		}
+			const file = floorFile(pin);
+			const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
+			writeFileSync(temp, JSON.stringify({ ...f, until: 0 }));
+			renameSync(temp, file);
+			return true;
+		});
 	} catch {}
 }
 
@@ -639,7 +679,7 @@ async function main() {
 				if (floorTakenByOther(a.pin, agent)) return; // still theirs after 8 s: let it go
 				// The other agent took the floor and answered while we waited: unless this was ours by name, leave it.
 				if (introduced && !mine && kind !== 'hangup' && Date.now() - t0 > 2500 && floorHolderRecently(a.pin, agent)) return;
-				takeFloor(a.pin, agent, text);
+				if (!takeFloor(a.pin, agent, text)) return;
 			}
 			if (kind === 'task') {
 				// Work only for someone this agent works for: the room's own transcript says who spoke.
