@@ -1170,15 +1170,11 @@ export class GroupCallService {
       return
     }
     const room = this.store.room(code)
-    if (room && shown.kind === 'person') {
-      // An invitee leaves after three minutes if nobody has arrived. Bring that
-      // team back when the host joins, rather than leaving stale names behind.
-      for (const previous of this.store.invites(code, 50)) {
-        if (previous.status !== 'done' || !/\b(?:nobody came|everyone else left)\b/i.test(previous.note) || Date.now() - previous.createdAt > 15 * 60_000) continue
-        if (AGENTS[previous.agent]) {
-          this.store.finishInvite(previous.id, 'done', 'requeued after host arrival')
-          this.queueAgent(room, previous.agent, previous.sub)
-        }
+    if (room && this.isRoomHost(room, who, shown)) {
+      // The invited agents are a standing room roster. Dial them only after the
+      // owner/host arrives; they never wait in an empty room.
+      for (const member of this.store.roomAgentRoster(code)) {
+        if (AGENTS[member.agent]) this.queueAgent(room, member.agent, member.sub)
       }
     }
     const greeter = room?.greeter
@@ -1189,6 +1185,15 @@ export class GroupCallService {
       const leg = this.line?.participants(code).find((p) => shownParticipant(p, this.agentNumbers, this.config.knownCallers, this.calledIn).name === greeter)
       if (leg) void this.line?.kick(code, leg.leg)
     }, 45_000).unref?.()
+  }
+
+  private isRoomHost(room: Room, participant: Participant, shown: ReturnType<typeof shownParticipant>): boolean {
+    if (shown.kind !== 'person') return false
+    if (room.host?.startsWith('+')) return Boolean(participant.from && normalNumber(participant.from) === normalNumber(room.host))
+    if (room.host) return shown.name.toLowerCase().includes(room.host.toLowerCase())
+    const owner = this.store.user(room.sub)
+    const known = shown.trusted && owner?.name && owner.name.toLowerCase().startsWith(shown.name.toLowerCase())
+    return Boolean(known)
   }
 
   // ---- our voice agents' tools -------------------------------------------------
@@ -1464,7 +1469,11 @@ export class GroupCallService {
   private maybeGreet(code: string, who: Participant): void {
     const room = this.store.room(code)
     if (!room?.greeter || !AGENTS[room.greeter]) return
-    if (shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn).kind !== 'person') return
+    const shown = shownParticipant(who, this.agentNumbers, this.config.knownCallers, this.calledIn)
+    if (shown.kind !== 'person') return
+    // A room with a standing team waits for its owner; the receptionist is part
+    // of that team and must not come in early for another caller.
+    if (this.store.roomAgentRoster(code).length || this.isRoomHost(room, who, shown)) return
     if (this.hostHere(code)) return
     if (this.live(code).some((p) => p.name === room.greeter)) return
     const open = this.store.openInvite(code, room.greeter)
