@@ -75,14 +75,14 @@ export function createMcpServer(client = new GroupCallClient()): McpServer {
   )
   server.tool(
     'invite',
-    'Invite people and agents into a room by name, from your contacts book: e.g. names "riotcoder, cha0spunk, Kim". Our agents are queued to dial in, SIP agents are dialled direct, phone agents join on answer, people are rung and press 1. Says per name what happened (unknown names are not in the book). People on the call can say "invite Kim" too.',
+    'Invite people and agents into a room by name, from your contacts book: e.g. names "riotcoder, cha0spunk, Kim". Our agents are queued to dial in, SIP agents are dialled direct, phone contacts are called, and email-only contacts receive the room number and code by email. Says per name what happened (unknown names are not in the book). People on the call can say "invite Kim" too.',
     { code, names: z.union([z.string(), z.array(z.string())]).describe('Names from your contacts') },
     wrap(({ code, names }) => client.inviteNames(code, names)),
   )
   server.tool('list_contacts', 'Your contacts book: people and agents you can invite by name (operators also see our own agents, builtin).', {}, wrap(() => client.contacts()))
   server.tool(
     'add_contact',
-    'Add someone to your contacts book. A person needs a phone. An agent needs one of ours (agent: riotcoder|cha0spunk|rootkey|coinpay|knox), a SIP address (sip:...@sip.rtc.elevenlabs.io) or a phone number (it joins on answer). aliases help speech recognition ("chaos punk"); trusted lets a person ask for invites by voice from their phone.',
+    'Add someone to your contacts book with any details you have. A phone or SIP address lets group.call call them; an email-only contact gets room dialing instructions when invited. An agent can also be one of ours (riotcoder|cha0spunk|rootkey|coinpay|knox). Aliases help speech recognition ("chaos punk"); trusted lets a person ask for invites by voice from their phone.',
     { ...contactFields, name: z.string().min(1).max(40) },
     wrap((c) => client.addContact(c)),
   )

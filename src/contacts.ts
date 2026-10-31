@@ -9,9 +9,10 @@
  */
 
 /**
- * How a contact is reached. A person is rung and presses 1. An agent is one of ours
- * (the worker dials it in), a SIP voice agent, or an agent on a phone number, rung
- * straight in with no press 1.
+ * How a contact is reached. A person with a phone is rung and presses 1. An agent is
+ * one of ours (the worker dials it in), a SIP voice agent, or an agent on a phone
+ * number, rung straight in with no press 1. An email-only contact receives the room
+ * dialing instructions when invited and joins by calling in.
  */
 export type Contact = {
   id: string

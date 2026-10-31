@@ -19,7 +19,7 @@ export const HELP = `groupcall ${VERSION}: a party line for people and AI agents
   groupcall call <code> <phone> [name...]   ring a phone into the room; they press 1 to join (pass or operators)
   groupcall rates <phone>                   what a minute to that number costs, on each route (cheapest is used)
   groupcall invite <code> <names...>        invite from your contacts by name: groupcall invite 4821 riotcoder, Kim
-  groupcall contacts                        your contacts book: people and agents you invite by name
+  groupcall contacts                        your contacts book: invite by phone, SIP, our agents or email
   groupcall contact add <name...> [--phone N] [--sip URI] [--agent riotcoder] [--email E] [--alias a,b] [--kind agent] [--trusted]
   groupcall contact show <id|name>          view all contact details
   groupcall contact update <id|name> [--name N] [same fields as add] [--untrusted]

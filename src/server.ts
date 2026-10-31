@@ -8,6 +8,7 @@
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { Hono, type Context } from 'hono'
+import { createTransport } from 'nodemailer'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { streamSSE } from 'hono/streaming'
 import { authorizeUrl, exchangeCode, pkce } from '@profullstack/coinpay-onboard/oauth'
@@ -21,7 +22,7 @@ import { ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
 import { loadRoutes } from './routing.js'
 import { webhooksApi } from '@profullstack/webhooks'
 import { toolHandler } from '@profullstack/voice-agent'
-import { AGENTS, CODE_LENGTH, formatNumber, GroupCallService, hostLabel, newApiKey, telLink, UserError, type Config, type LiveEvent } from './service.js'
+import { AGENTS, CODE_LENGTH, formatNumber, GroupCallService, hostLabel, newApiKey, telLink, UserError, type Config, type InvitationEmail, type LiveEvent } from './service.js'
 import { VERSION } from './version.js'
 
 export { VERSION }
@@ -362,7 +363,7 @@ export function createApp(deps: Deps) {
     const form = await formOf(c)
     if (!csrfOk(c, form.csrf)) return roomView(c, user, room, { error: 'That form went stale. Try again.' }, 400)
     const action = c.req.param('action')
-    const limiter = action === 'say' ? sayLimit : action === 'call' ? dialLimit : writeLimit
+    const limiter = action === 'say' ? sayLimit : action === 'call' || action === 'invite' ? dialLimit : writeLimit
     if (!limiter.allow(`${action}:${user.sub}`)) return roomView(c, user, room, { error: 'Too many at once. Wait a moment.' }, 429)
     try {
       if (action === 'say') {
@@ -869,6 +870,29 @@ export function createApp(deps: Deps) {
 export function serve(options: { port?: number; hostname?: string } = {}) {
   const env = process.env
   const key = env.GROUPCALL_KEY ?? ''
+  const smtpPassword = env.GROUPCALL_SMTP_PASS ?? env.MAIL_WORK_PASSWORD ?? ''
+  const smtpUser = env.GROUPCALL_SMTP_USER ?? env.MAIL_WORK_USER ?? 'anthony@profullstack.com'
+  const emailFrom = env.GROUPCALL_EMAIL_FROM ?? 'Anthony <anthony@profullstack.com>'
+  const smtp = smtpPassword
+    ? createTransport({
+        host: env.GROUPCALL_SMTP_HOST ?? 'smtp.forwardemail.net',
+        port: Number(env.GROUPCALL_SMTP_PORT ?? 465),
+        secure: (env.GROUPCALL_SMTP_SECURE ?? 'true').toLowerCase() !== 'false',
+        auth: { user: smtpUser, pass: smtpPassword },
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 20_000,
+      })
+    : null
+  const sendInvitationEmail = smtp
+    ? async (message: InvitationEmail) => {
+        const result = await smtp.sendMail({ from: emailFrom, to: message.to, subject: message.subject, text: message.text })
+        const accepted = (result.accepted ?? []) as Array<string | { address: string }>
+        if (!accepted.some((address) => (typeof address === 'string' ? address : address.address).toLowerCase() === message.to.toLowerCase())) {
+          throw new Error('SMTP did not accept the recipient')
+        }
+      }
+    : undefined
   const broadcastStreamKey = env.GROUPCALL_BROADCAST_STREAM_KEY ?? ''
   const broadcastStreamUrl = new URL(
     env.GROUPCALL_BROADCAST_STREAM_URL
@@ -910,6 +934,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ...(env.GROUPCALL_VOICE_KEY_REF ? { telnyxVoiceKeyRef: env.GROUPCALL_VOICE_KEY_REF } : {}),
       agentOperators: operatorList(env.GROUPCALL_AGENT_OPERATORS),
       ...(env.GROUPCALL_AGENT_WORKER_KEY ? { agentWorkerKey: env.GROUPCALL_AGENT_WORKER_KEY } : {}),
+      ...(sendInvitationEmail ? { sendInvitationEmail } : {}),
       knownCallers: Object.fromEntries(
         (env.GROUPCALL_KNOWN_CALLERS ?? '')
           .split(',')

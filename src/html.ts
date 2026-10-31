@@ -199,10 +199,10 @@ ${
     : ''
 }
 ${
-  data.owner && (ctx.callPhones || ctx.agents)
+  data.owner
     ? `<section>
   <h2>Invite from your contacts</h2>
-  <p class="muted small">Names from <a href="/me#contacts">your contacts</a>, people and agents: each is called the way they are reached. On the call, a trusted caller can just say <b>"invite riotcoder and Kim"</b>.</p>
+  <p class="muted small">Names from <a href="/me#contacts">your contacts</a>: phone and SIP contacts are called, and email-only contacts get the room number and code by email. On the call, a trusted caller can just say <b>"invite riotcoder and Kim"</b>.</p>
   <form method="post" action="/r/${esc(r.code)}/invite" class="row">${csrfField(ctx)}<input name="names" maxlength="300" required placeholder="riotcoder, cha0spunk, Kim" aria-label="Who to invite"><button>Invite</button></form>
 </section>`
     : ''
@@ -318,7 +318,7 @@ ${
   data.contacts
     ? `<section id="contacts">
   <h2>Contacts</h2>
-  <p class="muted small">People and agents you invite by name: say <b>"invite riotcoder and Kim"</b> on a call, type names on a room page, or <code>groupcall invite 4821 riotcoder kim</code>. A person is rung and presses 1. An agent is one of ours, a SIP voice agent (like an ElevenLabs agent), or an agent on a phone number, which joins on answer. Email stores contact details; it does not send an invitation or provide a number to call. Choose one of our agents above or provide a phone or SIP address. Aliases help the speech recognizer ("chaos punk"). A trusted person may ask for invites by voice from their phone.</p>
+  <p class="muted small">People and agents you invite by name: say <b>"invite riotcoder and Kim"</b> on a call, type names on a room page, or <code>groupcall invite 4821 riotcoder kim</code>. A person with a phone is rung and presses 1. Voice agents with a SIP address, phone number or one of our agent identities join by phone. Email-only contacts receive the room number and code by email when invited, then call in themselves. Add whichever details you have. Aliases help the speech recognizer ("chaos punk"). A trusted person may ask for invites by voice from their phone.</p>
   ${
     data.contacts.length
       ? `<ul class="contacts">${data.contacts
@@ -330,7 +330,7 @@ ${
           .join('')}</ul>`
       : '<p class="muted">No contacts yet.</p>'
   }
-  <form method="post" action="/me/contacts/add" class="row">${csrfField(ctx)}<input name="name" maxlength="40" required placeholder="Name" aria-label="Name"><select name="kind" aria-label="Person or agent"><option value="person">Person</option><option value="agent">Agent</option></select><input name="phone" type="tel" placeholder="Phone" aria-label="Phone"><input name="sip" placeholder="SIP (agents): sip:...@sip.rtc.elevenlabs.io" aria-label="SIP address"><select name="agent" aria-label="Our agent"><option value="">Our agent (optional)</option>${Object.keys(AGENTS).map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select><input name="email" type="email" placeholder="Email (contact details only)" aria-label="Email"><input name="aliases" maxlength="200" placeholder="Also called (comma separated)" aria-label="Aliases"><label class="small"><input type="checkbox" name="trusted" value="1"> trusted</label><button>Add contact</button></form>
+  <form method="post" action="/me/contacts/add" class="row">${csrfField(ctx)}<input name="name" maxlength="40" required placeholder="Name" aria-label="Name"><select name="kind" aria-label="Person or agent"><option value="person">Person</option><option value="agent">Agent</option></select><input name="phone" type="tel" placeholder="Phone" aria-label="Phone"><input name="sip" placeholder="SIP (agents): sip:...@sip.rtc.elevenlabs.io" aria-label="SIP address"><select name="agent" aria-label="Our agent"><option value="">Our agent (optional)</option>${Object.keys(AGENTS).map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select><input name="email" type="email" placeholder="Email for invitations" aria-label="Invitation email"><input name="aliases" maxlength="200" placeholder="Also called (comma separated)" aria-label="Aliases"><label class="small"><input type="checkbox" name="trusted" value="1"> trusted</label><button>Add contact</button></form>
 </section>`
     : ''
 }
@@ -445,7 +445,7 @@ export function helpPage(ctx: Ctx): string {
 <section id="agents">
   <h2>Agents</h2>
   <p>An agent joins the way a person does: it places a phone call to ${esc(number)}, keys the code with touch tones, then listens (speech to text) and talks (text to speech) on that call. Our agents (riotcoder and cha0spunk) do this with ElevenLabs voices. Room owners on this instance can invite them from the room page.</p>
-  <p><b>Invite by name.</b> Keep <a href="/me#contacts">a contacts book</a> of people (a phone number) and agents (one of ours, a SIP voice agent like an ElevenLabs agent, or an agent on a phone number). On the call, just say <b>"invite riotcoder, cha0spunk and Kim"</b>: agents dial in, people are rung and press 1, and the room hears what happened. That works for the room's known callers and for people you marked trusted; anyone else saying it changes nothing. Also <code>groupcall invite 4821 riotcoder, Kim</code>, MCP <code>invite</code>, or <code>POST /api/v1/rooms/4821/invite {"names": "riotcoder, Kim"}</code>.</p>
+  <p><b>Invite by name.</b> Keep <a href="/me#contacts">a contacts book</a> of people and agents, reached by one of our agent identities, a SIP address, a phone number or email. On the call, just say <b>"invite riotcoder, cha0spunk and Kim"</b>: agents dial in, phone contacts are called, email-only contacts get the room number and code, and the room hears what happened. That works for the room's known callers and for people you marked trusted; anyone else saying it changes nothing. Also <code>groupcall invite 4821 riotcoder, Kim</code>, MCP <code>invite</code>, or <code>POST /api/v1/rooms/4821/invite {"names": "riotcoder, Kim"}</code>.</p>
   <p><b>Group texts.</b> Share a link on a call (a readm3.com report, a PDF, anything) and everyone on the line gets it by text from ${esc(number)}: text it to ${esc(number)} while you are on the call, use <b>Text everyone</b> on the room page, <code>groupcall text 4821 https://readm3.com/...</code>, MCP <code>text_room</code>, or ask riotcoder on the call. Reply STOP to stop getting them. Optional: link your <a href="https://smshub.dev">smshub.dev</a> account on <a href="/me#smshub">your account page</a> (or <code>groupcall smshub &lt;key&gt;</code>) and your rooms' texts go out as smshub groups from your own number; if smshub cannot send, the room number is used.</p>
   <p><b>Webhooks.</b> Add a URL on <a href="/me#webhooks">your account</a> (or <code>groupcall webhook add</code>, MCP <code>create_webhook</code>, <code>POST /api/v1/webhooks</code>) and group.call POSTs <code>room.joined</code>, <code>room.left</code>, <code>transcript.line</code>, <code>text.sent</code>, <code>phone.called</code> and <code>recording.ready</code> to it as signed CloudEvents (Standard Webhooks, via <code>@profullstack/webhooks</code>).</p>
   <p>A room can also have a <b>greeter</b>: when somebody dials in before the host, riotcoder or cha0spunk joins, says hello, and keeps them company until the host arrives, then hands over and leaves. Set it on the room page (host = a phone number or a name on the line; blank means whoever joins next), with <code>groupcall greeter 4821 riotcoder 408-555-0101</code>, or MCP <code>set_greeter</code>.</p>

@@ -34,10 +34,12 @@
     "@profullstack/voice-agent": "0.1.1",
     "@profullstack/webhooks": "0.2.1",
     "hono": "^4.13.14",
+    "nodemailer": "^10.3.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",
+    "@types/nodemailer": "^8.0.2",
     "typescript": "^7.0.2"
   },
   "overrides": {

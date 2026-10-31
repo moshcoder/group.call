@@ -58,14 +58,15 @@ answers presses 1 to join. From the room page (**Call someone in**), the CLI
 their keypad or an agent sending DTMF on its leg, presses `*`, the number, then `#` (`*` again
 cancels). It needs the room owner's pass, and the keypad route rings 10 numbers an hour per room.
 
-Contacts and inviting by name: each account keeps a contacts book of people (a phone) and
-agents (one of ours, a SIP voice agent such as an ElevenLabs agent, or an agent on a phone
-number, which joins on answer with no press 1), with aliases for how speech recognition
-spells them ("chaos punk"). Operators have all five fleet agents in their book without
-saving them. On a call, a known caller (or a person the owner marked trusted) just says
-**"invite riotcoder, cha0spunk and Kim"**: each name is matched against the room owner's
-book, agents are queued, people are rung, and the room hears what happened ("Kim is not in
-the contacts" when one is not). The same from the room page (**Invite from your contacts**),
+Contacts and inviting by name: each account keeps a contacts book of people and agents,
+with aliases for how speech recognition spells them ("chaos punk"). A contact can be
+reached by one of our agent identities, a SIP address, a phone number, or email. Phone
+contacts are called; email-only contacts receive the room name, dial-in number and code
+by email, then call in themselves. Operators have all five fleet agents in their book
+without saving them. On a call, a known caller (or a person the owner marked trusted) just
+says **"invite riotcoder, cha0spunk and Kim"**: each name is matched against the room
+owner's book, agents are queued, people are rung or emailed, and the room hears what
+happened ("Kim is not in the contacts" when one is not). The same from the room page (**Invite from your contacts**),
 `/me#contacts`, the CLI (`groupcall contacts`, `groupcall contact add|show|update|rm`, `groupcall invite
 <code> <names...>`), the TUI (`n` on a room), MCP (`invite`, `list_contacts`, `add_contact`,
 `get_contact`, `update_contact`, `remove_contact`) and the API (`GET|POST /api/v1/contacts`, `PATCH|DELETE
@@ -76,6 +77,7 @@ Contact management uses your account API key from `/me` on every client:
 ```sh
 bunx @profullstack/groupcall contacts --json
 bunx @profullstack/groupcall contact add CoinPay --agent coinpay --email coinpay@profullstack.com
+bunx @profullstack/groupcall contact add Nora --kind agent --email nora@example.com
 bunx @profullstack/groupcall contact show CoinPay
 bunx @profullstack/groupcall contact update CoinPay --note "CFO / Accountant" --alias "coin pay,CFO"
 bunx @profullstack/groupcall contact update Kim --phone +14085550101 --untrusted
@@ -86,9 +88,7 @@ bunx @profullstack/groupcall contact rm <contact-id>
 Updates preserve fields you omit; `--name` renames a contact. Use an exact name or id;
 ambiguous names require an id. Builtin agents must be saved with `contact add` before
 editing or removing their saved entry. Removing a saved fleet agent leaves the builtin
-available to operators. Email is optional metadata: calling requires a phone, SIP address,
-or registered agent identity. The desktop app bundles this CLI; the PWA shares the web
-contact book. MCP exposes the same book with `list_contacts`, `get_contact`, `add_contact`,
+available to operators. Add an email-only contact with `groupcall contact add Nora --kind agent --email nora@example.com`, then invite by name with `groupcall invite 4821 Nora`. Group Call sends the room name, dial-in number and code through Forward Email SMTP from `anthony@profullstack.com`; Gmail is not used. Email-only contacts join by calling the number in the invitation. The desktop app bundles this CLI; the PWA shares the web contact book. MCP exposes the same book with `list_contacts`, `get_contact`, `add_contact`,
 `update_contact`, and `remove_contact`.
 
 Sign-in is CoinPay OAuth only. Rooms: 3 free. A room pass costs $5 for 30 days and gives
@@ -100,6 +100,11 @@ Bun + Hono + bun:sqlite on dev2 at `/opt/group.call`, unit `group-call`, port 88
 an exact-name nginx vhost with a cert from `pit-proxy-cert`. Deploy:
 `ssh root@dev2 'cd /opt/group.call && git pull && ./bin/install.sh'`. Settings are in
 `bin/install.conf`; secrets go in `~/.local/share/group-call/app.env` from the vault.
+
+Email-only room invitations use Forward Email SMTP: `GROUPCALL_SMTP_HOST` defaults to
+`smtp.forwardemail.net`, `GROUPCALL_SMTP_PORT` to `465`, and `GROUPCALL_SMTP_USER` to
+`anthony@profullstack.com`. Set `GROUPCALL_SMTP_PASS` in the production vault and use
+`GROUPCALL_EMAIL_FROM=Anthony <anthony@profullstack.com>`. Gmail is not used for sending.
 
 ### Live Nixamp broadcast
 

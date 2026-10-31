@@ -103,6 +103,8 @@ export type Config = {
   messagingProfileId?: string
   /** Checks on customer webhook URLs; tests allow private addresses. */
   webhookGuard?: GuardOptions
+  /** Send a room invitation when a contact has email but no dial-in address. */
+  sendInvitationEmail?: (message: InvitationEmail) => Promise<void>
   origin?: string
   fetch?: typeof fetch
 }
@@ -130,7 +132,9 @@ export function podcastBroadcastName(roomName: string): 'TUI Weekly' | 'Off The 
 }
 
 /** What happened to one name in an invite. */
-export type InviteResult = { name: string; heard: string; status: 'invited' | 'calling' | 'here' | 'unknown' | 'ambiguous' | 'failed'; how?: 'agent' | 'sip' | 'phone'; message: string }
+export type InviteResult = { name: string; heard: string; status: 'invited' | 'calling' | 'here' | 'unknown' | 'ambiguous' | 'failed'; how?: 'agent' | 'sip' | 'phone' | 'email'; message: string }
+
+export type InvitationEmail = { to: string; subject: string; text: string }
 
 /** What group.call tells customer webhooks about. */
 export const WEBHOOK_EVENTS = ['room.joined', 'room.left', 'transcript.line', 'text.sent', 'phone.called', 'recording.ready']
@@ -1228,7 +1232,7 @@ export class GroupCallService {
     return [...ours, ...saved]
   }
 
-  /** Add or change a contact. A person needs a phone; an agent needs one of ours, a SIP address or a phone. */
+  /** Add or change a contact. A phone or email is enough for a person; agents may also use SIP or one of ours. */
   saveContact(user: User, input: Record<string, unknown>, id?: string): Contact {
     const was = id ? this.store.contact(user.sub, id) : null
     if (id && !was) throw new UserError('No such contact.', undefined, 404)
@@ -1246,8 +1250,8 @@ export class GroupCallService {
     const email = str('email', 120) ?? was?.email ?? ''
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new UserError('That email does not look right.', 'email')
     const kind = agent ? 'agent' : input.kind === 'agent' || input.kind === 'person' ? input.kind : sip ? 'agent' : (was?.kind ?? 'person')
-    if (kind === 'person' && !phone) throw new UserError('A person needs a phone number to be called in.', 'phone')
-    if (kind === 'agent' && !agent && !sip && !phone) throw new UserError('An agent needs one of ours, a SIP address, or a phone number.', 'sip')
+    if (kind === 'person' && !phone && !email) throw new UserError('A person needs a phone number or an email address for an invitation.', 'phone')
+    if (kind === 'agent' && !agent && !sip && !phone && !email) throw new UserError('An agent needs one of ours, a SIP address, a phone number, or an email address.', 'sip')
     const aliasesIn = input.aliases === undefined ? undefined : Array.isArray(input.aliases) ? input.aliases.map(String) : String(input.aliases ?? '').split(',')
     const aliases = (aliasesIn ?? was?.aliases ?? []).map((a) => a.replace(/\s+/g, ' ').trim().slice(0, 40)).filter(Boolean).slice(0, 8)
     const note = str('note', 200) ?? was?.note ?? ''
@@ -1327,7 +1331,27 @@ export class GroupCallService {
         await this.dialSip(room, c.sip, c.name, {}, askedBy)
         return { ...base, status: 'calling', how: 'sip', message: `Calling ${c.name}.` }
       }
-      if (!c.phone) return fail(`${c.name} has no number to call.`)
+      if (!c.phone && c.email) {
+        const sendInvitationEmail = this.config.sendInvitationEmail
+        if (!sendInvitationEmail) return fail('Email invitations are not configured on this instance yet.')
+        const now = Date.now()
+        const recent = (this.lineDials.get(room.code) ?? []).filter((t) => now - t < 60 * 60_000)
+        if (fromLine && recent.length >= LINE_DIALS_PER_HOUR) return fail(`This room has invited ${LINE_DIALS_PER_HOUR} people in this hour.`)
+        const dialIn = formatNumber(this.config.dialIn)
+        const invitedBy = askedBy ? `${askedBy} invited you` : 'You are invited'
+        try {
+          await sendInvitationEmail({
+            to: c.email,
+            subject: `Join ${room.name} on group.call`,
+            text: `Hi ${c.name},\n\n${invitedBy} to join "${room.name}" on group.call.\n\nCall ${dialIn}, then enter ${room.code}# when prompted.\n\n— Anthony`,
+          })
+        } catch {
+          return fail(`Could not send the invitation to ${c.name}. Check the SMTP settings and try again.`)
+        }
+        if (fromLine) this.lineDials.set(room.code, [...recent, now])
+        return { ...base, status: 'invited', how: 'email', message: `Invitation emailed to ${c.name}.` }
+      }
+      if (!c.phone) return fail(`${c.name} has no phone number, SIP address, or invitation email.`)
       if (!this.mayCallPhones(owner)) return fail(`Calling ${c.name} needs a room pass.`)
       if ((await this.minutes(owner)).left <= 0) return fail('This room has used its call minutes for the month.')
       const now = Date.now()

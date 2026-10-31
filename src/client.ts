@@ -194,4 +194,4 @@ export class GroupCallClient {
 }
 
 export type ApiContact = { id: string; name: string; kind: 'person' | 'agent'; phone: string; sip: string; agent: string; email: string; aliases: string[]; note: string; trusted: boolean; builtin?: boolean }
-export type InviteResult = { name: string; heard: string; status: 'invited' | 'calling' | 'here' | 'unknown' | 'ambiguous' | 'failed'; how?: 'agent' | 'sip' | 'phone'; message: string }
+export type InviteResult = { name: string; heard: string; status: 'invited' | 'calling' | 'here' | 'unknown' | 'ambiguous' | 'failed'; how?: 'agent' | 'sip' | 'phone' | 'email'; message: string }
