@@ -202,6 +202,8 @@ export class GroupCallService {
   readonly affiliates: Affiliates
   private readonly listeners = new Map<string, Set<(e: LiveEvent) => void>>()
   private readonly store: Store
+  /** Prevent simultaneous room-code webhooks from creating parallel conference bridges. */
+  private telnyxEventQueue: Promise<void> = Promise.resolve()
   readonly config: Config
   readonly broadcastRelay: LiveBroadcastRelay | null
   private readonly agentNumbers: Record<string, string>
@@ -487,7 +489,7 @@ export class GroupCallService {
     this.budgetFor(SIP_RATE, 'sip')
     const placed = await this.line.dial(room.code, uri.trim(), { from: this.config.dialIn, connectionId, name: clean, direct: true, headers })
     if (!placed) throw new UserError('The call could not be placed. Try again in a minute.', 'sip', 502)
-    this.store.addDialled({ leg: placed.leg, code: room.code, to: uri.trim(), provider: 'sip', rate: SIP_RATE, placedAt: Date.now() })
+    this.store.addDialled({ leg: placed.leg, code: room.code, to: uri.trim(), provider: 'sip', name: clean, rate: SIP_RATE, placedAt: Date.now() })
     const text = askedBy ? `is being called in by ${askedBy}` : 'is being called in'
     this.store.addEvent({ code: room.code, kind: 'invite', who: clean, text })
     this.emit({ type: 'invite', code: room.code, who: clean, text, callers: this.line.callersIn(room.code), at: Date.now() })
@@ -630,8 +632,11 @@ export class GroupCallService {
     }
     this.recordQuality(event)
     this.costEvent(event)
-    // Answered asynchronously: Telnyx wants a quick 200, and the commands go back on their own.
-    void this.line.handle(event).catch((e) => console.error('group call:', e))
+    // Return Telnyx's quick 200, then process events in arrival order. In
+    // particular, only one join may observe an empty room and create its bridge.
+    this.telnyxEventQueue = this.telnyxEventQueue
+      .then(() => this.line!.handle(event))
+      .catch((e) => console.error('group call:', e))
     return true
   }
 
@@ -643,6 +648,20 @@ export class GroupCallService {
     if (!this.line) return { rooms: 0, legs: 0 }
     const saved = this.store.liveSnapshot()
     if (saved.length === 0) return { rooms: 0, legs: 0 }
+    // SIP legs have no caller number to identify them after a restart. Keep the
+    // name beside the outbound leg and restore it before rebuilding the room.
+    for (const room of saved) {
+      for (const p of room.participants) {
+        if (p.name) continue
+        const dialled = this.store.dialled(p.leg)
+        if (dialled?.provider !== 'sip') continue
+        const configured = Object.entries(this.config.agentSip ?? {}).find(([, uri]) => uri.trim().toLowerCase() === dialled.to.trim().toLowerCase())?.[0]
+        const name = dialled.name || configured || ''
+        if (!name) continue
+        p.name = name
+        this.store.saveLeg(room.code, room.conferenceId, room.startedAt, p)
+      }
+    }
     const result = await this.line.restore(saved)
     const keep = new Map<string, Set<string>>()
     for (const r of saved) if (this.line.callersIn(r.code) > 0) keep.set(r.code, new Set(this.line.participants(r.code).map((p) => p.leg)))

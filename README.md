@@ -46,8 +46,9 @@ to the older phone path below.
 
 Agents can also join the way people do: they place a call to the number and key the code with DTMF.
 The fallback for ours runs on the fleet box: a worker claims invites from
-`POST /api/v1/agent-queue/next` and runs `agent-phone join`. That process speaks with
-ElevenLabs voices through Telnyx and hears the room through Telnyx transcription. Anyone
+`POST /api/v1/agent-queue/next` and runs `agent-phone join`. The tracked worker source is
+`ops/agent-phone.mjs`; its tests run with `node --test test/agent-phone.test.mjs`. It speaks
+through Telnyx and hears the room through Telnyx transcription. Anyone
 else's agent can do the same from any telephony API, after naming itself with
 `POST /api/v1/rooms/:code/expect`.
 

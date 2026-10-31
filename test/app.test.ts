@@ -19,6 +19,7 @@ let smshubMode: 'ok' | 'down' | 'badkey' = 'ok'
 /** A fetch that records what Telnyx was asked; a conference creation answers with an id. */
 function telnyxRecorder() {
   const calls: { path: string; body: any }[] = []
+  const participants = new Set<string>()
   const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     if (String(url).startsWith('https://files.test/')) return new Response(new Uint8Array([0x49, 0x44, 0x33, 1, 2, 3]), { status: 200 })
     if (String(url).startsWith('https://smshub.test/')) {
@@ -32,11 +33,15 @@ function telnyxRecorder() {
     const path = String(url).replace('https://api.telnyx.com/v2', '')
     calls.push({ path, body: JSON.parse(String(init?.body ?? '{}')) })
     if (path === '/messages' && smsReply === '40010') return new Response(JSON.stringify({ errors: [{ code: '40010', title: 'Not 10DLC registered' }] }), { status: 400 })
+    if (path === '/conferences/conf-1' && methodIsGet(init)) return new Response(JSON.stringify({ data: { id: 'conf-1', status: 'in_progress' } }))
+    if (path.startsWith('/conferences/conf-1/participants') && methodIsGet(init)) return new Response(JSON.stringify({ data: [...participants].map((id) => ({ call_control_id: id, status: 'joined' })) }))
     const json = path === '/conferences' ? { data: { id: 'conf-1' } } : path === '/calls' ? { data: { call_control_id: 'out-1' } } : {}
     return new Response(JSON.stringify(json), { status: 200 })
   }) as unknown as typeof globalThis.fetch
-  return { calls, fetch }
+  return { calls, fetch, participants }
 }
+
+const methodIsGet = (init?: RequestInit) => (init?.method ?? 'GET') === 'GET'
 
 const DIAL_IN = '+15106169327'
 const AGENT_CALLER = '+19492847328'
@@ -45,25 +50,26 @@ function setup(extra: Record<string, unknown> = {}) {
   const keys = telnyxKeys()
   const telnyx = telnyxRecorder()
   const store = new Store(':memory:', new Sealer('k'.repeat(32)))
+  const config = {
+    key: 'k'.repeat(32),
+    clientId: 'cp_test',
+    coinpayBase: 'https://coinpayportal.com',
+    coinpayWebhookSecret: 'whsec',
+    telnyxApiKey: 'KEY_test',
+    telnyxPublicKey: keys.publicKey,
+    dialIn: DIAL_IN,
+    telnyxConnectionId: 'conn-gc',
+    agentOperators: ['sub-op'],
+    agentWorkerKey: 'worker-secret',
+    agentCallerIds: { riotcoder: AGENT_CALLER, cha0spunk: '+15107667447' },
+    fetch: telnyx.fetch,
+    ...extra,
+  }
   const { app, svc } = createApp({
     store,
     origin: 'https://group.call.test',
     secureCookies: false,
-    config: {
-      key: 'k'.repeat(32),
-      clientId: 'cp_test',
-      coinpayBase: 'https://coinpayportal.com',
-      coinpayWebhookSecret: 'whsec',
-      telnyxApiKey: 'KEY_test',
-      telnyxPublicKey: keys.publicKey,
-      dialIn: DIAL_IN,
-      telnyxConnectionId: 'conn-gc',
-      agentOperators: ['sub-op'],
-      agentWorkerKey: 'worker-secret',
-      agentCallerIds: { riotcoder: AGENT_CALLER, cha0spunk: '+15107667447' },
-      fetch: telnyx.fetch,
-      ...extra,
-    },
+    config,
   })
   const tokens = { accessToken: 'a', refreshToken: null, expiresAt: 0 }
   const op = store.upsertUser('sub-op', 'Anthony', 'op@example.com', tokens)
@@ -83,7 +89,7 @@ function setup(extra: Record<string, unknown> = {}) {
     await new Promise((resolve) => setTimeout(resolve, 5))
     return r
   }
-  return { app, svc, store, telnyx, call, event, op, guest }
+  return { app, svc, store, telnyx, call, event, op, guest, config }
 }
 
 describe('rooms', () => {
@@ -217,6 +223,44 @@ describe('agents', () => {
 
     const done = await app.request(`/api/v1/agent-queue/${next.id}`, { method: 'POST', headers: { ...worker, 'content-type': 'application/json' }, body: JSON.stringify({ ok: true, note: 'left after 3 min' }) })
     expect(((await done.json()) as any).status).toBe('done')
+  })
+
+  test('Nora has a dedicated caller ID, so a worker arrival is shown by name', async () => {
+    const noraNumber = '+19492847328'
+    const { call, event, svc } = setup({
+      agentCallerIds: {
+        riotcoder: '+14159185508', cha0spunk: '+15107667447', coinpay: '+15623079115',
+        knox: '+18313290328', rootkey: '+14106398993', nora: noraNumber,
+      },
+    })
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Agents' })).json()) as any
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/agents`, { agent: 'nora' })).status).toBe(202)
+    const next = svc.nextInvite()!
+    expect(next).toMatchObject({ agent: 'nora', from: noraNumber, status: 'dialling' })
+    await event('call.initiated', { call_control_id: 'leg-nora', direction: 'incoming', from: noraNumber })
+    await event('call.gather.ended', { call_control_id: 'leg-nora', digits: room.code })
+    expect(svc.live(room.code)).toEqual([{ name: 'nora', kind: 'agent', since: expect.any(Number) }])
+  })
+
+  test('six simultaneous agent arrivals all join the same conference', async () => {
+    const agentCallerIds = {
+      riotcoder: '+14159185508', cha0spunk: '+15107667447', coinpay: '+15623079115',
+      knox: '+18313290328', rootkey: '+14106398993', nora: '+19492847328',
+    }
+    const { call, event, svc, telnyx } = setup({ agentCallerIds })
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Team call' })).json()) as any
+    for (const agent of Object.keys(agentCallerIds)) expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/agents`, { agent })).status).toBe(202)
+    for (const [agent, from] of Object.entries(agentCallerIds)) expect(svc.nextInvite()).toMatchObject({ agent, from })
+
+    await Promise.all(Object.entries(agentCallerIds).map(async ([agent, from]) => {
+      const leg = `leg-${agent}`
+      await event('call.initiated', { call_control_id: leg, direction: 'incoming', from })
+      await event('call.gather.ended', { call_control_id: leg, digits: room.code })
+    }))
+
+    expect(telnyx.calls.filter((c) => c.path === '/conferences')).toHaveLength(1)
+    expect(telnyx.calls.filter((c) => c.path === '/conferences/conf-1/actions/join')).toHaveLength(5)
+    expect(svc.live(room.code).map((p) => p.name).sort()).toEqual(Object.keys(agentCallerIds).sort())
   })
 
   test("your own agent can be named before it dials in from its own number", async () => {
@@ -784,6 +828,22 @@ describe('recording a room', () => {
     expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/call`, { sip: 'sip:x@evil.example', name: 'x' })).status).toBe(400)
     const guestRoom = (await (await call('gc_guest', 'POST', '/api/v1/rooms', { name: 'Mine' })).json()) as any
     expect((await call('gc_guest', 'POST', `/api/v1/rooms/${guestRoom.code}/call`, { sip: 'sip:+15106169327@sip.rtc.elevenlabs.io', name: 'x' })).status).toBe(403)
+  })
+
+  test('a SIP agent keeps its name after a restart even if the old live-leg row lost it', async () => {
+    const noraSip = 'sip:+16505550147@sip.rtc.elevenlabs.io;transport=tcp'
+    const { call, event, telnyx, svc, store, config } = setup({ agentSip: { nora: noraSip } })
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Standup' })).json()) as any
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/agents`, { agent: 'nora' })).status).toBe(202)
+    await event('call.answered', { call_control_id: 'out-1' })
+    expect(svc.live(room.code)).toMatchObject([{ name: 'nora', kind: 'agent' }])
+    expect(store.dialled('out-1')).toMatchObject({ provider: 'sip', name: 'nora', to: noraSip })
+
+    telnyx.participants.add('out-1')
+    store.db.query('UPDATE live_legs SET name = ? WHERE leg = ?').run('', 'out-1')
+    const restarted = createApp({ store, origin: 'https://group.call.test', config })
+    expect(await restarted.svc.restore()).toEqual({ rooms: 1, legs: 1 })
+    expect(restarted.svc.live(room.code)).toEqual([{ name: 'nora', kind: 'agent', since: expect.any(Number) }])
   })
 })
 
