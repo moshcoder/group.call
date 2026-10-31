@@ -593,6 +593,42 @@ export function createApp(deps: Deps) {
   }
   const body = async (c: Context) => ((await c.req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>
 
+  // SMSHub's Settings > Connect group.call flow sends a fresh CoinPay access
+  // token server-to-server. CoinPay userinfo verifies it; the token is never
+  // exposed to the browser or saved here.
+  const coinpayUser = async (c: Context) => {
+    const authorization = c.req.header('authorization') ?? ''
+    const token = /^Bearer\s+(\S+)$/i.exec(authorization.trim())?.[1]
+    if (!token) return null
+    try {
+      return await new CoinPay({ base: config.coinpayBase, token, ...(config.fetch ? { fetch: config.fetch } : {}) }).userinfo()
+    } catch {
+      return null
+    }
+  }
+  app.post('/api/integrations/smshub', async (c) => {
+    const identity = await coinpayUser(c)
+    if (!identity?.sub) return c.json({ error: 'CoinPay authorization is missing or expired' }, 401)
+    if (!writeLimit.allow(`smshub-oauth:${identity.sub}`)) return c.json({ error: 'too many changes; wait a few minutes' }, 429)
+    try {
+      const b = await body(c)
+      return c.json(await svc.linkSmshub({ sub: identity.sub }, {
+        key: String(b.key ?? ''),
+        from: b.from ? String(b.from) : '',
+        relay: b.relay === true,
+        coinpaySub: identity.sub,
+      }))
+    } catch (e) {
+      return c.json({ error: message(e) }, statusOf(e) as 400)
+    }
+  })
+  app.delete('/api/integrations/smshub', async (c) => {
+    const identity = await coinpayUser(c)
+    if (!identity?.sub) return c.json({ error: 'CoinPay authorization is missing or expired' }, 401)
+    if (!writeLimit.allow(`smshub-oauth:${identity.sub}`)) return c.json({ error: 'too many changes; wait a few minutes' }, 429)
+    return c.json(svc.unlinkSmshub({ sub: identity.sub }))
+  })
+
   // Customer webhooks: the @profullstack/webhooks API, scoped to the key's account.
   const hookOwner = new WeakMap<Request, string>()
   const hooksApi = webhooksApi(svc.hooks, { basePath: '/api/v1/webhooks', owner: (req) => hookOwner.get(req) })
