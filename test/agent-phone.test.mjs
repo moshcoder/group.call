@@ -18,6 +18,13 @@ const now = Date.now();
 
 test('configured Polly voice bypasses exhausted ElevenLabs and omits ElevenLabs credentials', () => {
   assert.equal(worker.voiceFor('riotcoder', 'AWS.Polly.Matthew-Neural'), worker.FALLBACK_VOICE);
+  assert.equal(worker.voiceFor('riotcoder', '', true), 'AWS.Polly.Matthew-Neural');
+  assert.equal(worker.voiceFor('cha0spunk', '', true), 'AWS.Polly.Joanna-Neural');
+  assert.equal(worker.voiceFor('rootkey', '', true), 'AWS.Polly.Stephen-Neural');
+  assert.equal(worker.voiceFor('coinpay', '', true), 'AWS.Polly.Danielle-Neural');
+  assert.equal(worker.voiceFor('knox', '', true), 'AWS.Polly.Joey-Neural');
+  assert.equal(worker.voiceFor('nora', '', true), 'AWS.Polly.Ruth-Neural');
+  assert.equal(new Set(Object.values(worker.POLLY_VOICES)).size, 6);
   assert.deepEqual(worker.speechRequest('Hello.', worker.FALLBACK_VOICE), {
     payload: 'Hello.',
     voice: 'AWS.Polly.Matthew-Neural',
@@ -65,6 +72,10 @@ test('room questions work when transcription omitted punctuation', () => {
   assert.equal(worker.roomQuestionFallback('Anthony: What was that?'), "Sorry, I missed what you meant. Could you repeat the part you want me to explain?");
   assert.equal(worker.weakRoomAnswer('Anthony: What was that?', "I'm here and listening."), true);
   assert.equal(worker.weakRoomAnswer('Anthony: Can you hear me?', "I'm here and listening."), false);
+  assert.equal(worker.shouldFallbackRoomResponse('riotcoder', 'Anthony: Is anyone here?', ''), true);
+  assert.equal(worker.shouldFallbackRoomResponse('nora', 'Anthony: Nora, can you hear me?', ''), true);
+  assert.equal(worker.shouldFallbackRoomResponse('riotcoder', 'Anthony: Nora, can you hear me?', ''), false);
+  assert.equal(worker.shouldFallbackRoomResponse('riotcoder', 'Anthony: Can you hear me?', "I'm here and listening."), false);
   assert.equal(worker.shouldConsiderRoomTurn('riotcoder', 'Anthony: I said no.'), false);
   assert.equal(worker.shouldConsiderRoomTurn('riotcoder', 'Anthony: What was that?'), true);
   assert.equal(worker.shouldConsiderRoomTurn('nora', 'Anthony: Nora, are you there?'), true);
