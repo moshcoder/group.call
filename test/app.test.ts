@@ -1066,7 +1066,7 @@ describe('our agents as ElevenLabs voice agents', () => {
     expect((await app.request('/api/v1/agent-queue/next', { method: 'POST', headers: { authorization: 'Bearer worker-secret' } })).status).toBe(204)
     expect(store.openInvite(room.code, 'riotcoder')?.status).toBe('dialling')
     await event('call.answered', { call_control_id: 'out-1' })
-    expect(store.openInvite(room.code, 'riotcoder')).toBeNull()
+    expect(store.openInvite(room.code, 'riotcoder')).toMatchObject({ status: 'dialling', note: 'connected; waiting for the agent to respond' })
   })
 
   test('its tools act only for someone trusted who just spoke; a task reaches the worker; a bad secret is refused', async () => {
