@@ -262,6 +262,7 @@ describe('agents', () => {
     expect(liveEvents.some((e) => e.type === 'identify' && e.who === 'riotcoder')).toBe(true)
     expect(store.events(room.code).map((e) => [e.kind, e.who])).toContainEqual(['identify', 'riotcoder'])
     expect(telnyx.calls.some((c) => c.path === '/calls')).toBe(false)
+    expect(telnyx.calls.some((c) => c.body.payload === 'To call someone in, enter their phone number, then press pound. Press star to cancel.')).toBe(false)
     expect(store.consumeAgentJoinToken(room.code, invite.joinToken)).toBeNull()
     expect(store.invite(invite.id)?.joinToken).toBe('')
   })

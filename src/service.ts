@@ -245,6 +245,10 @@ export class GroupCallService {
             ...(config.voice ? { voice: config.voice } : {}),
             ...(config.telnyxVoiceKeyRef ? { voiceSettings: { api_key_ref: config.telnyxVoiceKeyRef } } : {}),
             maxParticipants: 20,
+            // Agents identify themselves with *token# on the same keypad used
+            // for calling a person into the room. Let that fast DTMF sequence
+            // arrive before the human call-in prompt is spoken.
+            invitePromptDelayMs: 1200,
             ...(config.fetch ? { fetch: config.fetch } : {}),
             onCode: async (code) => {
               const room = store.room(code)
