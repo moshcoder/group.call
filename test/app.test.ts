@@ -242,6 +242,30 @@ describe('agents', () => {
     expect(svc.live(room.code)).toEqual([{ name: 'nora', kind: 'agent', since: expect.any(Number) }])
   })
 
+  test('a one-time DTMF join token names an agent when Telnyx withholds caller ID', async () => {
+    const { call, event, svc, store, telnyx } = setup()
+    const room = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Anonymous caller' })).json()) as any
+    await call('gc_op', 'POST', `/api/v1/rooms/${room.code}/agents`, { agent: 'riotcoder' })
+    const invite = svc.nextInvite()!
+    expect(invite.joinToken).toMatch(/^\d{8}$/)
+
+    const liveEvents: any[] = []
+    svc.subscribe(room.code, (e) => liveEvents.push(e))
+    await event('call.initiated', { call_control_id: 'leg-anonymous-agent', direction: 'incoming' })
+    await event('call.gather.ended', { call_control_id: 'leg-anonymous-agent', digits: room.code })
+    expect(svc.live(room.code)).toMatchObject([{ name: 'a caller', kind: 'person' }])
+
+    for (const digit of `*${invite.joinToken}#`) await event('call.dtmf.received', { call_control_id: 'leg-anonymous-agent', digit })
+
+    expect(svc.live(room.code)).toMatchObject([{ name: 'riotcoder', kind: 'agent' }])
+    expect((store.db.query('SELECT name FROM live_legs WHERE leg = ?').get('leg-anonymous-agent') as any).name).toBe('riotcoder')
+    expect(liveEvents.some((e) => e.type === 'identify' && e.who === 'riotcoder')).toBe(true)
+    expect(store.events(room.code).map((e) => [e.kind, e.who])).toContainEqual(['identify', 'riotcoder'])
+    expect(telnyx.calls.some((c) => c.path === '/calls')).toBe(false)
+    expect(store.consumeAgentJoinToken(room.code, invite.joinToken)).toBeNull()
+    expect(store.invite(invite.id)?.joinToken).toBe('')
+  })
+
   test('six simultaneous agent arrivals all join the same conference', async () => {
     const agentCallerIds = {
       riotcoder: '+14159185508', cha0spunk: '+15107667447', coinpay: '+15623079115',

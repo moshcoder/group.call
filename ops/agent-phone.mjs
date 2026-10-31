@@ -50,6 +50,10 @@ export function speechRequest(text, voice) {
 	if (voice.startsWith('ElevenLabs.')) request.voice_settings = { api_key_ref: 'qrypt_elevenlabs' };
 	return request;
 }
+export function identityDtmf(token) {
+	if (!/^\d{8}$/.test(String(token))) throw new Error('Agent join token must be eight digits');
+	return `*${token}#`;
+}
 const DISPLAY_NAMES = { riotcoder: 'RiotCoder', cha0spunk: 'ChaosPunk', rootkey: 'RootKey', coinpay: 'CoinPay', knox: 'Knox', nora: 'Nora' };
 export function agentIntro(agent) { return `Hi, I’m ${DISPLAY_NAMES[agent] || agent}, Anthony’s AI agent. I’m here and listening.`; }
 export function shouldIntroduce(agent, transcript, now = Date.now(), recentMs = 3 * 60_000) {
@@ -472,6 +476,9 @@ async function main() {
 		keyed = true;
 		if (join) void followRoom();
 		await act('send_dtmf', { digits: `${a.pin}#`, duration_millis: 250 }).catch((e) => console.error(`dtmf failed: ${e.message}`));
+		if (join && a['join-token']) {
+			setTimeout(() => act('send_dtmf', { digits: identityDtmf(a['join-token']), duration_millis: 180 }).catch((e) => console.error(`identity dtmf failed: ${e.message}`)), 1800).unref();
+		}
 		// The room welcomes us and says who is there; speak after that.
 		setTimeout(() => turn(), 9000).unref();
 	};
@@ -893,7 +900,7 @@ async function groupcallWorker(a) {
 			if (podcast) { try { brief = read(`${HOME}/.config/qc-agents/tuiweekly-brief.md`).trim() || brief; } catch {} }
 			execFile(
 				process.argv[1],
-				['join', job.dial_in, '--pin', job.code, '--agent', job.agent, '--room', job.room_name, '--goal', brief, '--json', ...(podcast ? ['--podcast'] : []), ...(job.from ? ['--from', job.from] : []), ...(job.role ? ['--role', job.role] : [])],
+				['join', job.dial_in, '--pin', job.code, '--agent', job.agent, '--room', job.room_name, '--goal', brief, '--json', ...(podcast ? ['--podcast'] : []), ...(job.from ? ['--from', job.from] : []), ...(job.joinToken ? ['--join-token', job.joinToken] : []), ...(job.role ? ['--role', job.role] : [])],
 				{ timeout: 65 * 60_000, maxBuffer: 8 << 20, env: { ...process.env, GROUPCALL_STATUS_URL: `${base}/api/v1/agent-queue/rooms/${job.code}`, GROUPCALL_AGENT_WORKER_KEY: key, ...(val('GEMINI_API_KEY') ? { GEMINI_API_KEY: val('GEMINI_API_KEY') } : {}) } },
 				async (err, stdout) => {
 					let r = {};
