@@ -225,6 +225,30 @@ describe('agents', () => {
     expect(((await done.json()) as any).status).toBe('done')
   })
 
+  test('RiotCoder worker credentials claim only RiotCoder phone work', async () => {
+    const { call, app, store } = setup({ riotcoderAgentWorkerKey: 'riotcoder-worker-secret' })
+    const riotRoom = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'RiotCoder' })).json()) as any
+    const otherRoom = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Other agent' })).json()) as any
+    await call('gc_op', 'POST', `/api/v1/rooms/${riotRoom.code}/agents`, { agent: 'riotcoder' })
+    await call('gc_op', 'POST', `/api/v1/rooms/${otherRoom.code}/agents`, { agent: 'cha0spunk' })
+    store.addTask({ agent: 'riotcoder', code: riotRoom.code, roomName: 'RiotCoder', brief: 'Riot task', ack: 'On it.', said: 'Riot' })
+    store.addTask({ agent: 'cha0spunk', code: otherRoom.code, roomName: 'Other agent', brief: 'Other task', ack: 'On it.', said: 'Chaos' })
+
+    const shared = { authorization: 'Bearer worker-secret' }
+    const riot = { authorization: 'Bearer riotcoder-worker-secret' }
+    const otherInvite = await app.request('/api/v1/agent-queue/next', { method: 'POST', headers: shared })
+    expect((await otherInvite.json() as any).agent).toBe('cha0spunk')
+    const riotInvite = await app.request('/api/v1/agent-queue/next', { method: 'POST', headers: riot })
+    expect((await riotInvite.json() as any).agent).toBe('riotcoder')
+    expect((await app.request(`/api/v1/agent-queue/rooms/${riotRoom.code}`, { headers: shared })).status).toBe(403)
+    expect((await app.request(`/api/v1/agent-queue/rooms/${riotRoom.code}`, { headers: riot })).status).toBe(200)
+
+    const otherTask = await app.request('/api/v1/agent-queue/tasks/next', { method: 'POST', headers: shared })
+    expect((await otherTask.json() as any).agent).toBe('cha0spunk')
+    const riotTask = await app.request('/api/v1/agent-queue/tasks/next', { method: 'POST', headers: riot })
+    expect((await riotTask.json() as any).agent).toBe('riotcoder')
+  })
+
   test('Nora has a dedicated caller ID, so a worker arrival is shown by name', async () => {
     const noraNumber = '+19492847328'
     const { call, event, svc } = setup({

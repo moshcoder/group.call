@@ -277,22 +277,111 @@ phase_setup() {
 install_agent_phone() {
   [ "$APP" = group-call ] || return 0
   [ -f "$SRC_DIR/ops/agent-phone.mjs" ] || return 0
-  local worker_user worker_home worker_group worker_node
-  worker_user="${AGENT_PHONE_USER:-anthony}"
+  local worker_user worker_home worker_group worker_node source_node source_node_version source_node_major source_node_minor phone_source phone_tmp worker_key worker_env_tmp
+  worker_user="${AGENT_PHONE_USER:-riotcoder}"
   worker_home="$(getent passwd "$worker_user" | cut -d: -f6)"
   [ -n "$worker_home" ] || die "AGENT_PHONE_USER '$worker_user' has no home directory"
   worker_group="$(id -gn "$worker_user")"
-  worker_node="$worker_home/.local/share/mise/shims/node"
-  [ -x "$worker_node" ] || die "agent worker node runtime missing: $worker_node"
-  install -d -o "$worker_user" -g "$worker_group" -m 0750 "$worker_home/.local/share/agent-phone" "$worker_home/.local/bin"
+  if [ "$worker_user" = riotcoder ]; then
+    # Install a private Node runtime copy so RiotCoder never executes through
+    # Anthony's mise shims or depends on Anthony's home directory.
+    source_node="$(find /home/anthony/.local/share/mise/installs/node -maxdepth 4 -type f -name node -perm /111 2>/dev/null | sort -V | tail -n 1)"
+    [ -n "$source_node" ] || die "Node 22.18+ runtime not found for agent worker"
+    source_node_version="$("$source_node" --version 2>/dev/null || true)"
+    source_node_version="${source_node_version#v}"
+    source_node_major="${source_node_version%%.*}"
+    source_node_minor="${source_node_version#*.}"
+    source_node_minor="${source_node_minor%%.*}"
+    [[ "$source_node_major" =~ ^[0-9]+$ && "$source_node_minor" =~ ^[0-9]+$ ]] || die "could not read agent worker Node version"
+    (( source_node_major > 22 || (source_node_major == 22 && source_node_minor >= 18) )) || die "agent worker requires Node 22.18 or newer"
+    worker_node="$worker_home/.local/share/agent-phone/node"
+    install -d -o "$worker_user" -g "$worker_group" -m 0750 "$worker_home/.local/share/agent-phone" "$worker_home/.local/bin" "$worker_home/.local/libexec" "$worker_home/.config/agent-phone" "$worker_home/.config/groupcall" "$worker_home/.config/qc-agents"
+    install -o "$worker_user" -g "$worker_group" -m 0755 "$source_node" "$worker_node"
+
+    phone_source="/home/anthony/www/qrypt.chat/app.env"
+    [ -r "$phone_source" ] || die "phone integration settings not found at $phone_source"
+    phone_tmp="$(mktemp)"
+    grep -E '^(TELNYX_API_KEY|TELNYX_AGENT_APP_ID|AGENT_PHONE_SECRET|PHONE_CALLER_ID)=' "$phone_source" > "$phone_tmp"
+    for name in TELNYX_API_KEY TELNYX_AGENT_APP_ID AGENT_PHONE_SECRET PHONE_CALLER_ID; do
+      grep -q "^$name=" "$phone_tmp" || { rm -f "$phone_tmp"; die "required phone setting $name is missing"; }
+    done
+    install -o "$worker_user" -g "$worker_group" -m 0600 "$phone_tmp" "$worker_home/.config/agent-phone/phone.env"
+    rm -f "$phone_tmp"
+
+    worker_key="${GROUPCALL_AGENT_WORKER_KEY_RIOTCODER:-}"
+    if [ -z "$worker_key" ] && [ -f "$STATE_DIR/riotcoder-worker.env" ]; then
+      worker_key="$(sed -n 's/^GROUPCALL_AGENT_WORKER_KEY_RIOTCODER=//p' "$STATE_DIR/riotcoder-worker.env" | tail -n 1)"
+    fi
+    if [ -z "$worker_key" ]; then
+      worker_key="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')"
+    fi
+    put_root_file "$STATE_DIR/riotcoder-worker.env" 0600 <<EOF
+GROUPCALL_AGENT_WORKER_KEY_RIOTCODER=$worker_key
+EOF
+    export GROUPCALL_AGENT_WORKER_KEY_RIOTCODER="$worker_key"
+    worker_env_tmp="$(mktemp)"
+    cat > "$worker_env_tmp" <<EOF
+GROUPCALL_URL=https://group.call.pit.world
+GROUPCALL_AGENT=riotcoder
+GROUPCALL_AGENT_WORKER_KEY=$worker_key
+EOF
+    install -o "$worker_user" -g "$worker_group" -m 0600 "$worker_env_tmp" "$worker_home/.config/groupcall/worker.env"
+    rm -f "$worker_env_tmp"
+
+    for prompt in phone-turn.md group-turn.md offtherecord-turn.md offtherecord-brief.md; do
+      install -o "$worker_user" -g "$worker_group" -m 0644 "$SRC_DIR/ops/prompts/$prompt" "$worker_home/.config/qc-agents/$prompt"
+    done
+    install -o "$worker_user" -g "$worker_group" -m 0644 "$SRC_DIR/ops/prompts/offtherecord-turn.md" "$worker_home/.config/qc-agents/podcast-turn.md"
+  else
+    worker_node="$worker_home/.local/share/mise/shims/node"
+    [ -x "$worker_node" ] || die "agent worker node runtime missing: $worker_node"
+    install -d -o "$worker_user" -g "$worker_group" -m 0750 "$worker_home/.local/share/agent-phone" "$worker_home/.local/bin"
+  fi
   install -o "$worker_user" -g "$worker_group" -m 0750 "$SRC_DIR/ops/agent-phone.mjs" "$worker_home/.local/share/agent-phone/agent-phone.mjs"
   cat > "$worker_home/.local/bin/agent-phone.tmp" <<EOF
 #!/bin/sh
+export HOME=$worker_home
+export QC_AGENT=$worker_user
 exec $worker_node $worker_home/.local/share/agent-phone/agent-phone.mjs "\$@"
 EOF
   chown "$worker_user:$worker_group" "$worker_home/.local/bin/agent-phone.tmp"
   chmod 0750 "$worker_home/.local/bin/agent-phone.tmp"
   mv "$worker_home/.local/bin/agent-phone.tmp" "$worker_home/.local/bin/agent-phone"
+  if [ "$worker_user" = riotcoder ]; then
+    put_root_file /etc/systemd/system/groupcall-riotcoder-worker.service 0644 <<EOF
+$MARKER
+[Unit]
+Description=RiotCoder group.call phone worker
+After=network-online.target group-call.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=riotcoder
+Group=riotcoder
+WorkingDirectory=/home/riotcoder
+Environment=HOME=/home/riotcoder
+Environment=QC_AGENT=riotcoder
+Environment=PATH=/home/riotcoder/.local/share/agent-phone:/home/riotcoder/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/riotcoder/.local/bin/agent-phone groupcall-worker --for 55 --agent riotcoder
+TimeoutStartSec=65min
+EOF
+    put_root_file /etc/systemd/system/groupcall-riotcoder-worker.timer 0644 <<EOF
+$MARKER
+[Unit]
+Description=Run RiotCoder group.call worker each minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now groupcall-riotcoder-worker.timer >/dev/null
+  fi
   log "agent worker installed for $worker_user"
 }
 
@@ -333,6 +422,7 @@ Environment=NODE_ENV=production
 Environment=PATH=$unit_path
 EnvironmentFile=-$STATE_DIR/db.env
 EnvironmentFile=-$STATE_DIR/app.env
+EnvironmentFile=-$STATE_DIR/riotcoder-worker.env
 ExecStart=$STATE_DIR/run.sh
 Restart=always
 RestartSec=2

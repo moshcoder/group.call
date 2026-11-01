@@ -24,11 +24,12 @@
  *
  * Only for calls Anthony asked for: the agent says it is an AI in its first line.
  */
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 
-const HOME = process.env.AGENT_PHONE_HOME || process.env.HOME || '/home/anthony';
+const HOME = process.env.HOME || '';
+if (!HOME) throw new Error('HOME must identify the running agent account');
 const read = (p) => readFileSync(p, 'utf8');
 const envVal = (file, name) => {
 	try {
@@ -37,10 +38,11 @@ const envVal = (file, name) => {
 		return process.env[name] || '';
 	}
 };
-const TELNYX_KEY = envVal(`${HOME}/www/qrypt.chat/app.env`, 'TELNYX_API_KEY');
-const AGENT_APP = envVal(`${HOME}/www/qrypt.chat/app.env`, 'TELNYX_AGENT_APP_ID');
-const SECRET = envVal(`${HOME}/www/qrypt.chat/app.env`, 'AGENT_PHONE_SECRET');
-const CALLER_ID = envVal(`${HOME}/www/qrypt.chat/app.env`, 'PHONE_CALLER_ID') || '+19492847328';
+const PHONE_ENV = HOME === '/home/riotcoder' ? `${HOME}/.config/agent-phone/phone.env` : `${HOME}/www/qrypt.chat/app.env`;
+const TELNYX_KEY = envVal(PHONE_ENV, 'TELNYX_API_KEY');
+const AGENT_APP = envVal(PHONE_ENV, 'TELNYX_AGENT_APP_ID');
+const SECRET = envVal(PHONE_ENV, 'AGENT_PHONE_SECRET');
+const CALLER_ID = envVal(PHONE_ENV, 'PHONE_CALLER_ID');
 const EVENTS = 'https://qrypt.chat/api/phone/agent-events';
 const VOICES = { riotcoder: 'iP95p4xoKVk53GoZ742B', cha0spunk: 'cgSgspJ2msm6clMCkdW9' }; // ElevenLabs Chris, Jessica
 export const FALLBACK_VOICE = 'AWS.Polly.Matthew-Neural';
@@ -354,7 +356,9 @@ function configuredTurn(agent, prompt) {
 	return new Promise((resolve) => {
 		let output = '';
 		let settled = false;
-		const child = spawn('agent-llm', [agent, 'chat'], { cwd: TURN_CWD, stdio: ['pipe', 'pipe', 'ignore'] });
+		const modelEnv = { ...process.env };
+		for (const name of ['GROUPCALL_AGENT_WORKER_KEY', 'TELNYX_API_KEY', 'AGENT_PHONE_SECRET']) delete modelEnv[name];
+		const child = spawn('agent-llm', [agent, 'chat'], { cwd: TURN_CWD, stdio: ['pipe', 'pipe', 'ignore'], env: modelEnv });
 		const finish = (value) => {
 			if (settled) return;
 			settled = true;
@@ -399,6 +403,23 @@ const TASK_CHAT = { riotcoder: '6f1191b7-4dbf-4f31-b78e-8525880c1b2f', cha0spunk
 
 /** Queue work for the agent's own task runner (riotcoder-qc-sweep --tasks), which reports in qrypt.chat. */
 function queueTask(agent, ack, brief, said) {
+	if (agent === 'riotcoder') {
+		const task = {
+			source: 'groupcall',
+			chat_id: TASK_CHAT[agent],
+			chat_title: 'Agents',
+			ack,
+			instructions: `Anthony's phone request:\n${brief}\n\nWords heard on the call (transcription may be wrong):\n${said}`,
+			context: said,
+		};
+		execFileSync('/usr/bin/python3', ['/usr/local/libexec/qc-agent-responder', '--enqueue'], {
+			env: { ...process.env, QC_AGENT: agent },
+			input: JSON.stringify(task),
+			stdio: ['pipe', 'ignore', 'ignore'],
+			timeout: 20_000,
+		});
+		return;
+	}
 	const dir = `${HOME}/.local/share/${agent}-qc`;
 	const task = {
 		chat_id: TASK_CHAT[agent],
@@ -425,14 +446,14 @@ async function main() {
 		console.error('Usage: agent-phone call <number> --goal "what to achieve" [--agent riotcoder] [--max-minutes 10] [--json]');
 		process.exit(2);
 	}
-	if (!TELNYX_KEY || !AGENT_APP || !SECRET) throw new Error('Missing TELNYX_API_KEY / TELNYX_AGENT_APP_ID / AGENT_PHONE_SECRET in ~/www/qrypt.chat/app.env');
+	if (!TELNYX_KEY || !AGENT_APP || !SECRET || !CALLER_ID) throw new Error('Missing phone settings in ~/.config/agent-phone/phone.env');
 	const to = checkNumber(a._[1]);
 	const agent = typeof a.agent === 'string' ? a.agent : process.env.QC_AGENT || 'riotcoder';
 	/** Sent by a room's greeter setting: keep an early caller company until the host joins, then leave. */
 	const greeter = join && a.role === 'greeter';
 	const maxMinutes = Math.min(join ? 60 : 30, Math.max(1, Number(a['max-minutes']) || (join ? 30 : 10)));
 	const persona = a.podcast
-		? (agent === 'riotcoder' ? 'Codex, an AI assistant and co-host.' : 'Chaospunk, an AI assistant and co-host.')
+		? (agent === 'riotcoder' ? 'RiotCoder, Anthony\'s AI assistant and co-host.' : 'Chaospunk, an AI assistant and co-host.')
 		: (() => {
 			for (const p of [`${HOME}/.config/${agent}-qc/persona.md`, `${HOME}/.config/agent-identities/${agent}/AGENTS.md`]) {
 				try {
@@ -993,6 +1014,9 @@ async function groupcallWorker(a) {
 	const base = (val('GROUPCALL_URL') || 'https://group.call.pit.world').replace(/\/+$/, '');
 	const key = val('GROUPCALL_AGENT_WORKER_KEY');
 	if (!key) throw new Error('GROUPCALL_AGENT_WORKER_KEY missing (~/.config/groupcall/worker.env)');
+	const workerAgent = String(a.agent || val('GROUPCALL_AGENT') || '');
+	if (workerAgent && !TASK_CHAT[workerAgent]) throw new Error('Unknown GROUPCALL_AGENT');
+	if (workerAgent === 'riotcoder' && HOME !== '/home/riotcoder') throw new Error('RiotCoder phone worker must run from /home/riotcoder');
 	const until = Date.now() + (Number(a.for) || 55) * 1000;
 	const post = (path, body) =>
 		fetch(`${base}${path}`, { method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -1000,9 +1024,10 @@ async function groupcallWorker(a) {
 	/** Run one agent into one room, report how it went, and dial back once after an unplanned drop. */
 	const dialJob = (job) =>
 		new Promise((resolve) => {
-			const podcast = job.room_name === 'TUI Weekly';
+			const podcast = /^(?:tui weekly|off the record)$/i.test(String(job.room_name || '').trim());
 			let brief = job.brief;
-			if (podcast) { try { brief = read(`${HOME}/.config/qc-agents/tuiweekly-brief.md`).trim() || brief; } catch {} }
+			if (/^tui weekly$/i.test(String(job.room_name || '').trim())) { try { brief = read(`${HOME}/.config/qc-agents/tuiweekly-brief.md`).trim() || brief; } catch {} }
+			if (/^off the record$/i.test(String(job.room_name || '').trim())) { try { brief = read(`${HOME}/.config/qc-agents/offtherecord-brief.md`).trim() || brief; } catch {} }
 			execFile(
 				process.argv[1],
 				['join', job.dial_in, '--pin', job.code, '--agent', job.agent, '--room', job.room_name, '--goal', brief, '--json', ...(podcast ? ['--podcast'] : []), ...(job.from ? ['--from', job.from] : []), ...(job.joinToken ? ['--join-token', job.joinToken] : []), ...(job.role ? ['--role', job.role] : [])],
@@ -1035,8 +1060,8 @@ async function groupcallWorker(a) {
 			const t = await post('/api/v1/agent-queue/tasks/next').catch(() => null);
 			if (!t || t.status !== 200) break;
 			const task = await t.json();
-			if (!TASK_CHAT[task.agent]) continue;
-			console.log(`${new Date().toISOString()} ${task.agent} task from ${task.code}: ${String(task.brief).slice(0, 120)}`);
+			if (!TASK_CHAT[task.agent] || (workerAgent && task.agent !== workerAgent)) continue;
+			console.log(`${new Date().toISOString()} ${task.agent} task from ${task.code}`);
 			queueTask(task.agent, task.ack || 'On it.', task.brief, task.said);
 		}
 		const res = await post('/api/v1/agent-queue/next').catch(() => null);
@@ -1045,6 +1070,10 @@ async function groupcallWorker(a) {
 			continue;
 		}
 		const job = await res.json();
+		if (workerAgent && job.agent !== workerAgent) {
+			await post(`/api/v1/agent-queue/${encodeURIComponent(job.id)}`, { ok: false, note: 'worker scope mismatch' }).catch(() => {});
+			continue;
+		}
 		console.log(`${new Date().toISOString()} ${job.agent} -> ${job.code} (${job.room_name})`);
 		running.push(dialJob(job));
 	}

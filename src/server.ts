@@ -827,19 +827,31 @@ export function createApp(deps: Deps) {
   // ---- the agent worker --------------------------------------------------------
   // The box our agents run on cannot take webhooks, so it asks here for work.
 
-  const workerOk = (c: Context) => {
+  type WorkerScope = 'shared' | 'riotcoder'
+  const workerScope = (c: Context): WorkerScope | null => {
     const key = (c.req.header('authorization') ?? '').replace(/^Bearer\s+/i, '')
-    return Boolean(config.agentWorkerKey) && sameSecret(key, config.agentWorkerKey!)
+    if (config.riotcoderAgentWorkerKey && sameSecret(key, config.riotcoderAgentWorkerKey)) return 'riotcoder'
+    if (config.agentWorkerKey && sameSecret(key, config.agentWorkerKey)) return 'shared'
+    return null
+  }
+  const isolateRiotcoderWorker = Boolean(config.riotcoderAgentWorkerKey)
+  const workerCanUseAgent = (scope: WorkerScope, agent: string) =>
+    scope === 'riotcoder' ? agent === 'riotcoder' : !isolateRiotcoderWorker || agent !== 'riotcoder'
+  const workerCanUseRoom = (scope: WorkerScope, code: string) => {
+    const roster = store.roomAgentRoster(code).map((entry) => entry.agent)
+    return scope === 'riotcoder' ? roster.includes('riotcoder') : !isolateRiotcoderWorker || !roster.includes('riotcoder')
   }
   app.post('/api/v1/agent-queue/next', (c) => {
-    if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
-    const invite = svc.nextInvite()
+    const scope = workerScope(c)
+    if (!scope) return c.json({ error: 'worker key required' }, 401)
+    const invite = svc.nextInvite(scope === 'riotcoder' ? 'riotcoder' : undefined, scope === 'shared' && isolateRiotcoderWorker ? 'riotcoder' : undefined)
     return invite ? c.json(invite) : c.body(null, 204)
   })
   // Work our voice agents took on during calls: the worker hands each to the agent's task runner.
   app.post('/api/v1/agent-queue/tasks/next', (c) => {
-    if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
-    const task = svc.nextTask()
+    const scope = workerScope(c)
+    if (!scope) return c.json({ error: 'worker key required' }, 401)
+    const task = svc.nextTask(scope === 'riotcoder' ? 'riotcoder' : undefined, scope === 'shared' && isolateRiotcoderWorker ? 'riotcoder' : undefined)
     return task ? c.json({ id: task.id, agent: task.agent, code: task.code, room_name: task.roomName, brief: task.brief, ack: task.ack, said: task.said, at: new Date(task.createdAt).toISOString() }) : c.body(null, 204)
   })
 
@@ -849,16 +861,21 @@ export function createApp(deps: Deps) {
   app.on(['GET', 'POST'], '/api/agent-tools/:tool', async (c) => (await agentTools(c.req.raw)) ?? c.json({ error: 'not found' }, 404))
   /** For an agent on a call: is anybody (a person) still in the room? */
   app.post('/api/v1/agent-queue/rooms/:code/text', async (c) => {
-    if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
+    const scope = workerScope(c)
+    if (!scope) return c.json({ error: 'worker key required' }, 401)
     const b = await body(c)
+    const agent = String(b.agent ?? 'an agent').slice(0, 40)
+    if (!workerCanUseAgent(scope, agent) || !workerCanUseRoom(scope, codeParam(c))) return c.json({ error: 'worker scope does not include this agent or room' }, 403)
     try {
-      return c.json(await svc.textRoom(codeParam(c), String(b.text ?? ''), { name: String(b.agent ?? 'an agent').slice(0, 40) }))
+      return c.json(await svc.textRoom(codeParam(c), String(b.text ?? ''), { name: agent }))
     } catch (e) {
       return c.json({ error: message(e) }, statusOf(e) as 400)
     }
   })
   app.get('/api/v1/agent-queue/rooms/:code', (c) => {
-    if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
+    const scope = workerScope(c)
+    if (!scope) return c.json({ error: 'worker key required' }, 401)
+    if (!workerCanUseRoom(scope, codeParam(c))) return c.json({ error: 'worker scope does not include this room' }, 403)
     return c.json(svc.roomStatus(codeParam(c)))
   })
   /**
@@ -867,8 +884,10 @@ export function createApp(deps: Deps) {
    * to `wait` seconds for the next one, so an agent hears a line as soon as it lands.
    */
   app.get('/api/v1/agent-queue/rooms/:code/lines', async (c) => {
-    if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
+    const scope = workerScope(c)
+    if (!scope) return c.json({ error: 'worker key required' }, 401)
     const code = codeParam(c)
+    if (!workerCanUseRoom(scope, code)) return c.json({ error: 'worker scope does not include this room' }, 403)
     const after = Number(c.req.query('after') ?? 0)
     const waitMs = Math.min(25, Math.max(0, Number(c.req.query('wait') ?? 20))) * 1000
     const shape = (lines: ReturnType<typeof store.transcript>) => ({ lines: lines.map((l) => ({ id: l.id, who: l.who, kind: l.kind, text: l.text, at: l.at, trusted: svc.trusted(l.who, l.kind) })) })
@@ -889,7 +908,11 @@ export function createApp(deps: Deps) {
     return c.json(shape(lines))
   })
   app.post('/api/v1/agent-queue/:id', async (c) => {
-    if (!workerOk(c)) return c.json({ error: 'worker key required' }, 401)
+    const scope = workerScope(c)
+    if (!scope) return c.json({ error: 'worker key required' }, 401)
+    const invite = store.invite(param(c, 'id'))
+    if (!invite) return c.json({ error: 'not found' }, 404)
+    if (!workerCanUseAgent(scope, invite.agent)) return c.json({ error: 'worker scope does not include this invite' }, 403)
     const b = await body(c)
     const done = svc.finishInvite(param(c, 'id'), b.ok === true, String(b.note ?? ''))
     return done ? c.json(done) : c.json({ error: 'not found' }, 404)
@@ -970,6 +993,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ...(env.GROUPCALL_VOICE_KEY_REF ? { telnyxVoiceKeyRef: env.GROUPCALL_VOICE_KEY_REF } : {}),
       agentOperators: operatorList(env.GROUPCALL_AGENT_OPERATORS),
       ...(env.GROUPCALL_AGENT_WORKER_KEY ? { agentWorkerKey: env.GROUPCALL_AGENT_WORKER_KEY } : {}),
+      ...(env.GROUPCALL_AGENT_WORKER_KEY_RIOTCODER ? { riotcoderAgentWorkerKey: env.GROUPCALL_AGENT_WORKER_KEY_RIOTCODER } : {}),
       ...(sendInvitationEmail ? { sendInvitationEmail } : {}),
       knownCallers: Object.fromEntries(
         (env.GROUPCALL_KNOWN_CALLERS ?? '')
