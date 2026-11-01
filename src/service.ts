@@ -69,6 +69,8 @@ export type Config = {
   agentOperators?: string[]
   /** The worker that dials agents authenticates with this. */
   agentWorkerKey?: string
+  /** RiotCoder's worker key is scoped to his Linux account and queue. */
+  riotcoderAgentWorkerKey?: string
   /**
    * Our agents as ElevenLabs voice agents (src/agents.ts): agent -> SIP address. An agent
    * listed here is dialled straight into the room over SIP; one that is not goes through
@@ -1282,8 +1284,8 @@ export class GroupCallService {
   }
 
   /** For the worker: the next task an agent took on a call, for its task runner. */
-  nextTask(): AgentTask | null {
-    return this.store.claimTask()
+  nextTask(agent?: string, excludeAgent?: string): AgentTask | null {
+    return this.store.claimTask(Date.now(), agent, excludeAgent)
   }
 
   // ---- the contacts book -----------------------------------------------------
@@ -1487,13 +1489,13 @@ export class GroupCallService {
   }
 
   /** For the agent worker: the next agent to dial, with what it needs to get in. */
-  nextInvite(): (AgentInvite & { dial_in: string; from: string; room_name: string; brief: string }) | null {
-    const invite = this.store.claimInvite()
+  nextInvite(agent?: string, excludeAgent?: string): (AgentInvite & { dial_in: string; from: string; room_name: string; brief: string }) | null {
+    const invite = this.store.claimInvite(Date.now(), agent, excludeAgent)
     if (!invite) return null
     const room = this.store.room(invite.code)
     if (!room) {
       this.store.finishInvite(invite.id, 'failed', 'the room was deleted')
-      return this.nextInvite()
+      return this.nextInvite(agent, excludeAgent)
     }
     // Named before it dials, so the room says "riotcoder" when it arrives.
     const from = this.config.agentCallerIds?.[invite.agent]

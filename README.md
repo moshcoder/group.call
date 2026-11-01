@@ -52,6 +52,12 @@ through Telnyx and hears the room through Telnyx transcription. Anyone
 else's agent can do the same from any telephony API, after naming itself with
 `POST /api/v1/rooms/:code/expect`.
 
+RiotCoder's phone fallback runs as the `riotcoder` Linux user. Its private worker key can claim
+only RiotCoder invites and call tasks; the shared legacy worker skips RiotCoder's queue. The
+installer keeps his Telnyx settings under `/home/riotcoder/.config/agent-phone/phone.env` and
+installs the Off the Record podcast prompt in his own home. A trusted task requested in QryptChat
+or during a call is handed to his full `agent-llm` runner and reported in the original chat.
+
 Calling someone in: the room rings any US or Canadian number from the dial-in, and whoever
 answers presses 1 to join. From the room page (**Call someone in**), the CLI
 (`groupcall call <code> <phone> [name]`), the TUI (`p` on a room), MCP (`call_phone`), the API
