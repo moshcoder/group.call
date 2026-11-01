@@ -309,11 +309,14 @@ export class Store {
   }
 
   /** The oldest queued task, taken (once) by whoever asks. */
-  claimTask(now = Date.now(), agent?: string, excludeAgent?: string): AgentTask | null {
+  claimTask(now = Date.now(), agent?: string, excludeAgents: string[] = []): AgentTask | null {
     const filters = ["status = 'queued'"]
     const values: string[] = []
     if (agent) { filters.push('agent = ?'); values.push(agent) }
-    if (excludeAgent) { filters.push('agent <> ?'); values.push(excludeAgent) }
+    if (excludeAgents.length) {
+      filters.push(`agent NOT IN (${excludeAgents.map(() => '?').join(', ')})`)
+      values.push(...excludeAgents)
+    }
     const where = filters.join(' AND ')
     const r = this.db.query(`UPDATE agent_tasks SET status = 'taken', taken_at = ? WHERE id = (SELECT id FROM agent_tasks WHERE ${where} ORDER BY created_at LIMIT 1) RETURNING *`).get(now, ...values) as any
     return r ? { id: r.id, agent: r.agent, code: r.code, roomName: r.room_name, brief: r.brief, ack: r.ack, said: r.said, status: 'taken', createdAt: r.created_at } : null
@@ -599,12 +602,15 @@ export class Store {
    * workers never dial the same agent. Invites older than ten minutes are stale:
    * whoever asked has given up.
    */
-  claimInvite(now = Date.now(), agent?: string, excludeAgent?: string): AgentInvite | null {
+  claimInvite(now = Date.now(), agent?: string, excludeAgents: string[] = []): AgentInvite | null {
     this.db.query("UPDATE agent_invites SET status = 'failed', note = 'nobody picked it up in time', join_token = '', updated_at = ? WHERE status = 'queued' AND created_at < ?").run(now, now - 10 * 60_000)
     const filters = ["status = 'queued'"]
     const values: string[] = []
     if (agent) { filters.push('agent = ?'); values.push(agent) }
-    if (excludeAgent) { filters.push('agent <> ?'); values.push(excludeAgent) }
+    if (excludeAgents.length) {
+      filters.push(`agent NOT IN (${excludeAgents.map(() => '?').join(', ')})`)
+      values.push(...excludeAgents)
+    }
     const where = filters.join(' AND ')
     return this.toInvite(
       this.db

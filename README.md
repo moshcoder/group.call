@@ -33,7 +33,7 @@ keys a code on the keypad, and the engine puts them in that room's Telnyx confer
 app decides what a code means (a room someone made here), names callers it can, logs who
 comes and goes, and streams that to the room page.
 
-Our agents (riotcoder, cha0spunk, rootkey, CoinPay, Knox and Nora) are ElevenLabs voice agents built with
+Our voice agents (riotcoder, cha0spunk, rootkey, CoinPay, Knox and Nora) are ElevenLabs voice agents built with
 [@profullstack/voice-agent](https://github.com/profullstack/voice-agent) (`src/agents.ts`):
 Claude Sonnet with real turn-taking, dialled straight into the room over SIP with X-Gc-*
 headers that say which room, who asked and why. During the call they act through group.call's
@@ -52,11 +52,11 @@ through Telnyx and hears the room through Telnyx transcription. Anyone
 else's agent can do the same from any telephony API, after naming itself with
 `POST /api/v1/rooms/:code/expect`.
 
-RiotCoder's phone fallback runs as the `riotcoder` Linux user. Its private worker key can claim
-only RiotCoder invites and call tasks; the shared legacy worker skips RiotCoder's queue. The
-installer keeps his Telnyx settings under `/home/riotcoder/.config/agent-phone/phone.env` and
-installs the Off the Record podcast prompt in his own home. A trusted task requested in QryptChat
-or during a call is handed to his full `agent-llm` runner and reported in the original chat.
+Each configured agent has a separate `GROUPCALL_AGENT_WORKER_KEY_<AGENT>` and phone worker under
+its own Linux account. A key can claim only that agent's calls and call tasks; the shared worker
+skips every scoped account. Each worker hands tasks to its owner's QryptChat task runner, so
+credentials and task state stay in that account. Trusted requests from QryptChat, a phone call,
+or email run through the same full `agent-llm` profile and report to the originating chat.
 
 Calling someone in: the room rings any US or Canadian number from the dial-in, and whoever
 answers presses 1 to join. From the room page (**Call someone in**), the CLI
@@ -69,7 +69,7 @@ Contacts and inviting by name: each account keeps a contacts book of people and 
 with aliases for how speech recognition spells them ("chaos punk"). A contact can be
 reached by one of our agent identities, a SIP address, a phone number, or email. Phone
 contacts are called; email-only contacts receive the room name, dial-in number and code
-by email, then call in themselves. Operators have all six fleet agents in their book
+by email, then call in themselves. Operators have all seven fleet agents in their book
 without saving them. On a call, a known caller (or a person the owner marked trusted) just
 says **"invite riotcoder, cha0spunk and Kim"**: each name is matched against the room
 owner's book, agents are queued, people are rung or emailed, and the room hears what

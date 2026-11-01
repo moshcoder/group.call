@@ -249,6 +249,36 @@ describe('agents', () => {
     expect((await riotTask.json() as any).agent).toBe('riotcoder')
   })
 
+  test('each agent worker key claims only its own invites and tasks; shared worker skips scoped agents', async () => {
+    const { call, app, store } = setup({
+      agentWorkerKeys: { coinpay: 'coinpay-worker-secret', quill: 'quill-worker-secret' },
+    })
+    const coinpayRoom = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'CoinPay' })).json()) as any
+    const quillRoom = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Quill' })).json()) as any
+    const openRoom = (await (await call('gc_op', 'POST', '/api/v1/rooms', { name: 'Shared' })).json()) as any
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${coinpayRoom.code}/agents`, { agent: 'coinpay' })).status).toBe(202)
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${quillRoom.code}/agents`, { agent: 'quill' })).status).toBe(202)
+    expect((await call('gc_op', 'POST', `/api/v1/rooms/${openRoom.code}/agents`, { agent: 'cha0spunk' })).status).toBe(202)
+    store.addTask({ agent: 'coinpay', code: coinpayRoom.code, roomName: 'CoinPay', brief: 'CoinPay task', ack: 'On it.', said: 'Finance' })
+    store.addTask({ agent: 'quill', code: quillRoom.code, roomName: 'Quill', brief: 'Quill task', ack: 'On it.', said: 'Notes' })
+    store.addTask({ agent: 'cha0spunk', code: openRoom.code, roomName: 'Shared', brief: 'Shared task', ack: 'On it.', said: 'Email' })
+
+    const headers = (key: string) => ({ authorization: `Bearer ${key}` })
+    const sharedInvite = await app.request('/api/v1/agent-queue/next', { method: 'POST', headers: headers('worker-secret') })
+    expect((await sharedInvite.json() as any).agent).toBe('cha0spunk')
+    const coinpayInvite = await app.request('/api/v1/agent-queue/next', { method: 'POST', headers: headers('coinpay-worker-secret') })
+    expect((await coinpayInvite.json() as any).agent).toBe('coinpay')
+    const quillInvite = await app.request('/api/v1/agent-queue/next', { method: 'POST', headers: headers('quill-worker-secret') })
+    expect((await quillInvite.json() as any).agent).toBe('quill')
+
+    const sharedTask = await app.request('/api/v1/agent-queue/tasks/next', { method: 'POST', headers: headers('worker-secret') })
+    expect((await sharedTask.json() as any).agent).toBe('cha0spunk')
+    const coinpayTask = await app.request('/api/v1/agent-queue/tasks/next', { method: 'POST', headers: headers('coinpay-worker-secret') })
+    expect((await coinpayTask.json() as any).agent).toBe('coinpay')
+    const quillTask = await app.request('/api/v1/agent-queue/tasks/next', { method: 'POST', headers: headers('quill-worker-secret') })
+    expect((await quillTask.json() as any).agent).toBe('quill')
+  })
+
   test('Nora has a dedicated caller ID, so a worker arrival is shown by name', async () => {
     const noraNumber = '+19492847328'
     const { call, event, svc } = setup({
@@ -1134,7 +1164,7 @@ describe('the contacts book and inviting by name', () => {
     const kim = await call('gc_op', 'POST', '/api/v1/contacts', { name: 'Kim Lee', phone: '408-555-0123', aliases: ['kimmy'] })
     expect(kim.status).toBe(201)
     const book = ((await (await call('gc_op', 'GET', '/api/v1/contacts')).json()) as any).contacts
-    expect(book.map((c: any) => `${c.name}:${c.kind}:${c.builtin ?? false}`)).toEqual(['riotcoder:agent:true', 'cha0spunk:agent:true', 'rootkey:agent:true', 'coinpay:agent:true', 'knox:agent:true', 'nora:agent:true', 'Kim Lee:person:false'])
+    expect(book.map((c: any) => `${c.name}:${c.kind}:${c.builtin ?? false}`)).toEqual(['riotcoder:agent:true', 'cha0spunk:agent:true', 'rootkey:agent:true', 'coinpay:agent:true', 'knox:agent:true', 'nora:agent:true', 'quill:agent:true', 'Kim Lee:person:false'])
 
     await event('call.initiated', { call_control_id: 'leg-me', direction: 'incoming', from: ME })
     await event('call.gather.ended', { call_control_id: 'leg-me', digits: room.code })
