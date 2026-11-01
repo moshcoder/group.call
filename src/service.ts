@@ -69,7 +69,9 @@ export type Config = {
   agentOperators?: string[]
   /** The worker that dials agents authenticates with this. */
   agentWorkerKey?: string
-  /** RiotCoder's worker key is scoped to his Linux account and queue. */
+  /** Per-agent worker keys scope phone workers to their Linux account and queue. */
+  agentWorkerKeys?: Record<string, string>
+  /** Backward compatibility for the RiotCoder-only worker rollout. */
   riotcoderAgentWorkerKey?: string
   /**
    * Our agents as ElevenLabs voice agents (src/agents.ts): agent -> SIP address. An agent
@@ -119,6 +121,7 @@ export const AGENTS: Record<string, { about: string; voice: string; aliases: str
   coinpay: { about: 'CFO / Accountant: finance reports, reconciliation and expense review.', voice: 'ElevenLabs Daniel', aliases: ['coin pay', 'cfo', 'accountant'] },
   knox: { about: 'VP of Sales: pipeline, proposals and client relationships.', voice: 'ElevenLabs Adam', aliases: ['knocks', 'sales'] },
   nora: { about: 'Workplace well-being and career coach.', voice: 'ElevenLabs Sarah', aliases: ['nora coach', 'career coach', 'workplace coach'] },
+  quill: { about: 'Meeting notes, decisions and action items.', voice: 'AWS Polly Matthew', aliases: ['scribe', 'call scribe'] },
 }
 
 /** How many entries a contacts book holds. */
@@ -1284,8 +1287,8 @@ export class GroupCallService {
   }
 
   /** For the worker: the next task an agent took on a call, for its task runner. */
-  nextTask(agent?: string, excludeAgent?: string): AgentTask | null {
-    return this.store.claimTask(Date.now(), agent, excludeAgent)
+  nextTask(agent?: string, excludeAgents: string[] = []): AgentTask | null {
+    return this.store.claimTask(Date.now(), agent, excludeAgents)
   }
 
   // ---- the contacts book -----------------------------------------------------
@@ -1489,13 +1492,13 @@ export class GroupCallService {
   }
 
   /** For the agent worker: the next agent to dial, with what it needs to get in. */
-  nextInvite(agent?: string, excludeAgent?: string): (AgentInvite & { dial_in: string; from: string; room_name: string; brief: string }) | null {
-    const invite = this.store.claimInvite(Date.now(), agent, excludeAgent)
+  nextInvite(agent?: string, excludeAgents: string[] = []): (AgentInvite & { dial_in: string; from: string; room_name: string; brief: string }) | null {
+    const invite = this.store.claimInvite(Date.now(), agent, excludeAgents)
     if (!invite) return null
     const room = this.store.room(invite.code)
     if (!room) {
       this.store.finishInvite(invite.id, 'failed', 'the room was deleted')
-      return this.nextInvite(agent, excludeAgent)
+      return this.nextInvite(agent, excludeAgents)
     }
     // Named before it dials, so the room says "riotcoder" when it arrives.
     const from = this.config.agentCallerIds?.[invite.agent]

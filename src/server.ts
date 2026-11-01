@@ -827,31 +827,36 @@ export function createApp(deps: Deps) {
   // ---- the agent worker --------------------------------------------------------
   // The box our agents run on cannot take webhooks, so it asks here for work.
 
-  type WorkerScope = 'shared' | 'riotcoder'
+  type WorkerScope = 'shared' | { agent: string }
+  const scopedWorkerKeys: Record<string, string> = { ...(config.agentWorkerKeys ?? {}) }
+  if (config.riotcoderAgentWorkerKey) scopedWorkerKeys.riotcoder ??= config.riotcoderAgentWorkerKey
   const workerScope = (c: Context): WorkerScope | null => {
     const key = (c.req.header('authorization') ?? '').replace(/^Bearer\s+/i, '')
-    if (config.riotcoderAgentWorkerKey && sameSecret(key, config.riotcoderAgentWorkerKey)) return 'riotcoder'
+    for (const [agent, workerKey] of Object.entries(scopedWorkerKeys)) {
+      if (sameSecret(key, workerKey)) return { agent }
+    }
     if (config.agentWorkerKey && sameSecret(key, config.agentWorkerKey)) return 'shared'
     return null
   }
-  const isolateRiotcoderWorker = Boolean(config.riotcoderAgentWorkerKey)
   const workerCanUseAgent = (scope: WorkerScope, agent: string) =>
-    scope === 'riotcoder' ? agent === 'riotcoder' : !isolateRiotcoderWorker || agent !== 'riotcoder'
+    scope === 'shared' ? !scopedWorkerKeys[agent] : scope.agent === agent
   const workerCanUseRoom = (scope: WorkerScope, code: string) => {
     const roster = store.roomAgentRoster(code).map((entry) => entry.agent)
-    return scope === 'riotcoder' ? roster.includes('riotcoder') : !isolateRiotcoderWorker || !roster.includes('riotcoder')
+    return scope === 'shared' ? roster.every((agent) => workerCanUseAgent(scope, agent)) : roster.includes(scope.agent)
   }
+  const scopedAgent = (scope: WorkerScope) => scope === 'shared' ? undefined : scope.agent
+  const excludedAgents = (scope: WorkerScope) => scope === 'shared' ? Object.keys(scopedWorkerKeys) : []
   app.post('/api/v1/agent-queue/next', (c) => {
     const scope = workerScope(c)
     if (!scope) return c.json({ error: 'worker key required' }, 401)
-    const invite = svc.nextInvite(scope === 'riotcoder' ? 'riotcoder' : undefined, scope === 'shared' && isolateRiotcoderWorker ? 'riotcoder' : undefined)
+    const invite = svc.nextInvite(scopedAgent(scope), excludedAgents(scope))
     return invite ? c.json(invite) : c.body(null, 204)
   })
   // Work our voice agents took on during calls: the worker hands each to the agent's task runner.
   app.post('/api/v1/agent-queue/tasks/next', (c) => {
     const scope = workerScope(c)
     if (!scope) return c.json({ error: 'worker key required' }, 401)
-    const task = svc.nextTask(scope === 'riotcoder' ? 'riotcoder' : undefined, scope === 'shared' && isolateRiotcoderWorker ? 'riotcoder' : undefined)
+    const task = svc.nextTask(scopedAgent(scope), excludedAgents(scope))
     return task ? c.json({ id: task.id, agent: task.agent, code: task.code, room_name: task.roomName, brief: task.brief, ack: task.ack, said: task.said, at: new Date(task.createdAt).toISOString() }) : c.body(null, 204)
   })
 
@@ -929,6 +934,11 @@ export function createApp(deps: Deps) {
 export function serve(options: { port?: number; hostname?: string } = {}) {
   const env = process.env
   const key = env.GROUPCALL_KEY ?? ''
+  const agentWorkerKeys = Object.fromEntries(
+    Object.entries(env)
+      .filter(([name, value]) => name.startsWith('GROUPCALL_AGENT_WORKER_KEY_') && /^[A-Z0-9]+$/.test(name.slice('GROUPCALL_AGENT_WORKER_KEY_'.length)) && Boolean(value))
+      .map(([name, value]) => [name.slice('GROUPCALL_AGENT_WORKER_KEY_'.length).toLowerCase(), value!]),
+  )
   const smtpPassword = env.GROUPCALL_SMTP_PASS ?? env.MAIL_WORK_PASSWORD ?? ''
   const smtpUser = env.GROUPCALL_SMTP_USER ?? env.MAIL_WORK_USER ?? 'anthony@profullstack.com'
   const emailFrom = env.GROUPCALL_EMAIL_FROM ?? 'Anthony <anthony@profullstack.com>'
@@ -993,6 +1003,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ...(env.GROUPCALL_VOICE_KEY_REF ? { telnyxVoiceKeyRef: env.GROUPCALL_VOICE_KEY_REF } : {}),
       agentOperators: operatorList(env.GROUPCALL_AGENT_OPERATORS),
       ...(env.GROUPCALL_AGENT_WORKER_KEY ? { agentWorkerKey: env.GROUPCALL_AGENT_WORKER_KEY } : {}),
+      ...(Object.keys(agentWorkerKeys).length ? { agentWorkerKeys } : {}),
       ...(env.GROUPCALL_AGENT_WORKER_KEY_RIOTCODER ? { riotcoderAgentWorkerKey: env.GROUPCALL_AGENT_WORKER_KEY_RIOTCODER } : {}),
       ...(sendInvitationEmail ? { sendInvitationEmail } : {}),
       knownCallers: Object.fromEntries(

@@ -458,7 +458,7 @@ export function helpPage(ctx: Ctx): string {
 </section>
 <section id="agents">
   <h2>Agents</h2>
-  <p>Our voice agents dial into the room over SIP and use group.call tools to follow the room context. The fleet includes riotcoder, cha0spunk, rootkey, CoinPay, Knox and Nora. Room owners on this instance can invite them from the room page.</p>
+  <p>Our fleet agents can join rooms and receive tasks under their own accounts. RiotCoder, ChaosPunk, RootKey, CoinPay, Knox and Nora have voice agents over SIP; Quill joins through the private phone worker. Room owners on this instance can invite any of them from the room page.</p>
   <p><b>Invite by name.</b> Keep <a href="/me#contacts">a contacts book</a> of people and agents, reached by one of our agent identities, a SIP address, a phone number or email. On the call, just say <b>"invite riotcoder, cha0spunk and Kim"</b>: agents dial in, phone contacts are called, email-only contacts get the room number and code, and the room hears what happened. That works for the room's known callers and for people you marked trusted; anyone else saying it changes nothing. Also <code>groupcall invite 4821 riotcoder, Kim</code>, MCP <code>invite</code>, or <code>POST /api/v1/rooms/4821/invite {"names": "riotcoder, Kim"}</code>.</p>
   <p><b>Group texts.</b> Share a link on a call (a readm3.com report, a PDF, anything) and everyone on the line gets it by text from ${esc(number)}: text it to ${esc(number)} while you are on the call, use <b>Text everyone</b> on the room page, <code>groupcall text 4821 https://readm3.com/...</code>, MCP <code>text_room</code>, or ask riotcoder on the call. Reply STOP to stop getting them. Optional: connect the same CoinPay account from <a href="https://smshub.dev/settings">SMSHub Settings</a> and your rooms' texts go out as smshub groups from your own number; if smshub cannot send, the room number is used.</p>
   <p><b>Webhooks.</b> Add a URL on <a href="/me#webhooks">your account</a> (or <code>groupcall webhook add</code>, MCP <code>create_webhook</code>, <code>POST /api/v1/webhooks</code>) and group.call POSTs <code>room.joined</code>, <code>room.left</code>, <code>transcript.line</code>, <code>text.sent</code>, <code>phone.called</code> and <code>recording.ready</code> to it as signed CloudEvents (Standard Webhooks, via <code>@profullstack/webhooks</code>).</p>
@@ -483,7 +483,7 @@ export function helpPage(ctx: Ctx): string {
     <tr><td><code>POST /api/v1/rooms/:code/expect</code></td><td><code>{"name", "from"}</code>: name the next caller from that number</td></tr>
     <tr><td><code>POST /api/v1/rooms/:code/call</code></td><td><code>{"phone", "name"?}</code>: ring a phone into the room; they press 1 to join (pass). Answers with the route used (<code>via</code>) and its <code>rate</code> a minute</td></tr>
     <tr><td><code>GET /api/v1/rates?phone=</code></td><td>what a minute to that number costs on every route that carries it, cheapest first (least-cost routing)</td></tr>
-    <tr><td><code>POST /api/v1/rooms/:code/agents</code></td><td><code>{"agent"}</code>: ask riotcoder or cha0spunk in (operators)</td></tr>
+    <tr><td><code>POST /api/v1/rooms/:code/agents</code></td><td><code>{"agent"}</code>: ask a fleet agent in (operators)</td></tr>
     <tr><td><code>GET /r/:code/live</code></td><td>server-sent events as people come and go (signed in)</td></tr>
   </table>
 </section>

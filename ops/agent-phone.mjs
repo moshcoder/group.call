@@ -38,7 +38,7 @@ const envVal = (file, name) => {
 		return process.env[name] || '';
 	}
 };
-const PHONE_ENV = HOME === '/home/riotcoder' ? `${HOME}/.config/agent-phone/phone.env` : `${HOME}/www/qrypt.chat/app.env`;
+const PHONE_ENV = HOME === '/home/anthony' ? `${HOME}/www/qrypt.chat/app.env` : `${HOME}/.config/agent-phone/phone.env`;
 const TELNYX_KEY = envVal(PHONE_ENV, 'TELNYX_API_KEY');
 const AGENT_APP = envVal(PHONE_ENV, 'TELNYX_AGENT_APP_ID');
 const SECRET = envVal(PHONE_ENV, 'AGENT_PHONE_SECRET');
@@ -53,6 +53,7 @@ export const POLLY_VOICES = {
 	coinpay: 'AWS.Polly.Danielle-Neural',
 	knox: 'AWS.Polly.Joey-Neural',
 	nora: 'AWS.Polly.Ruth-Neural',
+	quill: 'AWS.Polly.Matthew-Neural',
 };
 export function fallbackVoiceFor(agent) { return POLLY_VOICES[agent] || FALLBACK_VOICE; }
 export function voiceFor(agent, override = '', skipElevenLabs = false) {
@@ -69,7 +70,7 @@ export function identityDtmf(token) {
 	if (!/^\d{8}$/.test(String(token))) throw new Error('Agent join token must be eight digits');
 	return `*${token}#`;
 }
-const DISPLAY_NAMES = { riotcoder: 'RiotCoder', cha0spunk: 'ChaosPunk', rootkey: 'RootKey', coinpay: 'CoinPay', knox: 'Knox', nora: 'Nora' };
+const DISPLAY_NAMES = { riotcoder: 'RiotCoder', cha0spunk: 'ChaosPunk', rootkey: 'RootKey', coinpay: 'CoinPay', knox: 'Knox', nora: 'Nora', quill: 'Quill' };
 export function agentIntro(agent) { return `Hi, I’m ${DISPLAY_NAMES[agent] || agent}, Anthony’s AI agent. I’m here and listening.`; }
 export function shouldIntroduce(agent, transcript, now = Date.now(), recentMs = 3 * 60_000) {
 	const last = [...transcript].reverse().find((line) => line.who === agent);
@@ -109,6 +110,7 @@ const NAME_ALIASES = {
 	coinpay: ['coinpay', 'coin pay', 'cfo', 'accountant'],
 	knox: ['knox', 'knocks', 'sales'],
 	nora: ['nora', 'nora coach', 'career coach', 'workplace coach'],
+	quill: ['quill', 'scribe', 'call scribe'],
 };
 function lev(a, b) {
 	const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
@@ -125,6 +127,7 @@ const SQUASHED = {
 	coinpay: ['coinpay'],
 	knox: ['knox'],
 	nora: ['nora'],
+	quill: ['quill'],
 };
 /**
  * Whether a transcribed line says this agent's name. Speech recognition mangles
@@ -399,38 +402,35 @@ export function parseTurn(out) {
 }
 
 /** The qrypt.chat chat each agent reports task results into (the Agents group with Anthony). */
-const TASK_CHAT = { riotcoder: '6f1191b7-4dbf-4f31-b78e-8525880c1b2f', cha0spunk: '6f1191b7-4dbf-4f31-b78e-8525880c1b2f' };
+const TASK_CHAT = {
+	cha0spunk: '6f1191b7-4dbf-4f31-b78e-8525880c1b2f',
+	coinpay: '6f1191b7-4dbf-4f31-b78e-8525880c1b2f',
+	knox: '6f1191b7-4dbf-4f31-b78e-8525880c1b2f',
+	nora: '6f1191b7-4dbf-4f31-b78e-8525880c1b2f',
+	quill: '6f1191b7-4dbf-4f31-b78e-8525880c1b2f',
+	riotcoder: '6f1191b7-4dbf-4f31-b78e-8525880c1b2f',
+	rootkey: '6f1191b7-4dbf-4f31-b78e-8525880c1b2f',
+};
 
 /** Queue work for the agent's own task runner (riotcoder-qc-sweep --tasks), which reports in qrypt.chat. */
+
 function queueTask(agent, ack, brief, said) {
-	if (agent === 'riotcoder') {
-		const task = {
-			source: 'groupcall',
-			chat_id: TASK_CHAT[agent],
-			chat_title: 'Agents',
-			ack,
-			instructions: `Anthony's phone request:\n${brief}\n\nWords heard on the call (transcription may be wrong):\n${said}`,
-			context: said,
-		};
-		execFileSync('/usr/bin/python3', ['/usr/local/libexec/qc-agent-responder', '--enqueue'], {
-			env: { ...process.env, QC_AGENT: agent },
-			input: JSON.stringify(task),
-			stdio: ['pipe', 'ignore', 'ignore'],
-			timeout: 20_000,
-		});
-		return;
-	}
-	const dir = `${HOME}/.local/share/${agent}-qc`;
+	if (!TASK_CHAT[agent]) throw new Error(`Unknown agent ${agent}`);
 	const task = {
+		source: 'groupcall',
 		chat_id: TASK_CHAT[agent],
 		chat_title: 'Agents',
 		ack,
-		brief,
-		cleared: null,
-		messages: `[${new Date().toISOString()}] (Anthony said this on a group.call phone call; transcribed, words may be wrong) ${said}`,
+		instructions: `Anthony's phone request:\n${brief}\n\nWords heard on the call (transcription may be wrong):\n${said}`,
+		request: said,
+		context: said,
 	};
-	appendFileSync(`${dir}/tasks.jsonl`, JSON.stringify(task) + '\n');
-	execFile(`${HOME}/.local/bin/riotcoder-qc-sweep`, ['--tasks'], { env: { ...process.env, QC_AGENT: agent } }, () => {});
+	execFileSync('/usr/bin/python3', ['/usr/local/libexec/qc-agent-responder', '--enqueue'], {
+		env: { ...process.env, QC_AGENT: agent },
+		input: JSON.stringify(task),
+		stdio: ['pipe', 'ignore', 'ignore'],
+		timeout: 20_000,
+	});
 }
 
 async function main() {
@@ -1016,7 +1016,7 @@ async function groupcallWorker(a) {
 	if (!key) throw new Error('GROUPCALL_AGENT_WORKER_KEY missing (~/.config/groupcall/worker.env)');
 	const workerAgent = String(a.agent || val('GROUPCALL_AGENT') || '');
 	if (workerAgent && !TASK_CHAT[workerAgent]) throw new Error('Unknown GROUPCALL_AGENT');
-	if (workerAgent === 'riotcoder' && HOME !== '/home/riotcoder') throw new Error('RiotCoder phone worker must run from /home/riotcoder');
+	if (workerAgent && HOME !== `/home/${workerAgent}`) throw new Error(`${workerAgent} phone worker must run from its own home`);
 	const until = Date.now() + (Number(a.for) || 55) * 1000;
 	const post = (path, body) =>
 		fetch(`${base}${path}`, { method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
