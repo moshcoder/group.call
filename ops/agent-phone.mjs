@@ -422,6 +422,10 @@ export function noteSaid(pin, agent, text) {
 		});
 	} catch {}
 }
+/** Where a joined leg asks the room who is on the line and what was said. */
+export function statusUrlFor(base, pin) {
+	return `${String(base).replace(/\/+$/, '')}/api/v1/agent-queue/rooms/${pin}`;
+}
 /** How long a co-host's line stays its own: the time its audio can still be coming back. */
 const CO_HOST_MEMORY_MS = 30_000;
 /**
@@ -714,6 +718,30 @@ async function main() {
 		process.exit(2);
 	}
 	if (join && typeof a.goal !== 'string') a.goal = 'You were invited to join this group call. Introduce yourself briefly, then listen, and help when someone asks you something.';
+	/**
+	 * A joined leg needs the room's own view of itself, and it can work out where
+	 * that is: the room code is on the command line and the worker key is in
+	 * worker.env.
+	 *
+	 * Without GROUPCALL_STATUS_URL a leg is blind in two ways that both showed up
+	 * on Off The Record. followRoom never runs, so instead of the room's transcript
+	 * - which labels every line by caller ID, `{"who":"Anthony","kind":"person"}`
+	 * next to `{"who":"cha0spunk","kind":"agent"}` - the leg has only its own
+	 * speech-to-text and has to guess from audio which voice was its co-host. And
+	 * roomWatch falls back to "twenty quiet minutes", so when the guest hangs up
+	 * the hosts stay on the line: episodes 8 and 9 each left two legs dialled into
+	 * an empty room, one with an hour of its cap still to run.
+	 *
+	 * An explicitly passed value always wins; this only fills in the blank.
+	 */
+	if (join) {
+		const workerEnv = `${HOME}/.config/groupcall/worker.env`;
+		if (!process.env.GROUPCALL_AGENT_WORKER_KEY) process.env.GROUPCALL_AGENT_WORKER_KEY = envVal(workerEnv, 'GROUPCALL_AGENT_WORKER_KEY');
+		const base = String(process.env.GROUPCALL_URL || envVal(workerEnv, 'GROUPCALL_URL') || '').replace(/\/+$/, '');
+		if (!process.env.GROUPCALL_STATUS_URL && base && process.env.GROUPCALL_AGENT_WORKER_KEY) {
+			process.env.GROUPCALL_STATUS_URL = statusUrlFor(base, a.pin);
+		}
+	}
 	if ((a._[0] !== 'call' && !join) || !a._[1] || typeof a.goal !== 'string') {
 		console.error('Usage: agent-phone call <number> --goal "what to achieve" [--agent riotcoder] [--max-minutes 10] [--json]');
 		process.exit(2);
