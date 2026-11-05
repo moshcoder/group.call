@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -201,6 +201,54 @@ test('a person talking while a host speaks is heard, not credited to the host', 
   assert.equal(worker.echoesFloor('I am my own customer, but I pay myself using my balance', floor), false);
   // Nothing claimed on the floor means nothing to echo.
   assert.equal(worker.echoesFloor('anything at all', ''), false);
+});
+
+test('a co-host is still recognised while the other host holds an empty reservation', () => {
+  // Episode 8: an interview turn reserves the floor BEFORE it has any words
+  // (takeFloor(pin, agent, '', 45_000)). Attribution used to read the holder's
+  // text, which was that empty string, so everything the other host said fell
+  // through as the guest - and a host then answered its own co-host's question
+  // as though Anthony had asked it.
+  const pin = `floor-reserve-${process.pid}`;
+  const asked = 'How many bare metal servers are you currently running for Profullstack?';
+  assert.equal(worker.takeFloor(pin, 'riotcoder', asked, 60_000), true);
+  worker.releaseFloor(pin, 'riotcoder');
+  // cha0spunk now reserves the floor with nothing to say yet.
+  assert.equal(worker.takeFloor(pin, 'cha0spunk', '', 45_000), true);
+  assert.equal(worker.floorHolder(pin), 'cha0spunk');
+  const heardByCohost = worker.coHostSpeech(pin, 'cha0spunk');
+  assert.deepEqual(heardByCohost.map((s) => s.agent), ['riotcoder']);
+  assert.equal(worker.echoesFloor('How many bare metal servers are you running', heardByCohost[0].text), true);
+  // And the guest still gets through, reservation or not.
+  assert.equal(worker.echoesFloor('Can you hear me?', heardByCohost[0].text), false);
+  worker.releaseFloor(pin, 'cha0spunk');
+});
+
+test('words spoken without the floor are still the speaker\'s own, not the guest\'s', () => {
+  // speak() used to ignore a refused claim and talk anyway, leaving its words
+  // with no claim behind them: the co-host heard its partner as a person.
+  const pin = `floor-refused-${process.pid}`;
+  assert.equal(worker.takeFloor(pin, 'cha0spunk', 'What did that cost you?', 60_000), true);
+  assert.equal(worker.takeFloor(pin, 'riotcoder', 'And who disagreed?'), false);
+  worker.noteSaid(pin, 'riotcoder', 'And who disagreed?');
+  // The refused claim changes nothing about who holds the floor.
+  assert.equal(worker.floorHolder(pin), 'cha0spunk');
+  assert.deepEqual(worker.coHostSpeech(pin, 'cha0spunk').map((s) => s.agent), ['riotcoder']);
+  assert.deepEqual(worker.coHostSpeech(pin, 'riotcoder').map((s) => s.agent), ['cha0spunk']);
+  worker.releaseFloor(pin, 'cha0spunk');
+});
+
+test('a co-host line goes stale, so an old question never shadows the guest', () => {
+  const pin = `floor-stale-${process.pid}`;
+  assert.equal(worker.takeFloor(pin, 'riotcoder', 'Tell me about the fleet.', 60_000), true);
+  assert.deepEqual(worker.coHostSpeech(pin, 'cha0spunk').map((s) => s.agent), ['riotcoder']);
+  const file = join(testHome, '.local/share/agent-phone/calls', `floor-${pin}.json`);
+  const aged = JSON.parse(readFileSync(file, 'utf8'));
+  aged.said.riotcoder.at = Date.now() - 120_000;
+  aged.text = '';
+  writeFileSync(file, JSON.stringify(aged));
+  assert.deepEqual(worker.coHostSpeech(pin, 'cha0spunk'), []);
+  worker.releaseFloor(pin, 'riotcoder');
 });
 
 test('a model that says PASS is saying nothing, not reading the word out', () => {
