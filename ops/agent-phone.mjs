@@ -210,7 +210,12 @@ const roomBody = (text) => String(text).replace(/(^|\s)[^:\s]*( ending \d+)?:\s*
 const QUIET_MS = 1000; // speak once they have paused this long (1.5 s on a group call: more voices, longer gaps)
 const TURN_CWD = `${HOME}/.local/share/agent-phone/turn-cwd`;
 mkdirSync(TURN_CWD, { recursive: true });
-const CALL_LOGS = `${HOME}/.local/share/agent-phone/calls`;
+/**
+ * Call logs and the room floor. AGENT_PHONE_HOME redirects them, which is how the
+ * tests stay out of a live agent's call directory: they set it, and without this
+ * their floor files landed next to real episodes' logs.
+ */
+const CALL_LOGS = `${process.env.AGENT_PHONE_HOME || HOME}/.local/share/agent-phone/calls`;
 mkdirSync(CALL_LOGS, { recursive: true });
 /** How speech recognition hears each agent's name, so a mangled name still counts as addressed. */
 const NAME_ALIASES = {
@@ -320,39 +325,95 @@ function withFloorLock(pin, update) {
 	}
 }
 
-/** Hold the floor for about as long as the line takes to say (roughly 14 chars a second). */
+/**
+ * Hold the floor for about as long as the line takes to say (roughly 14 chars a
+ * second), and record the words with the claim.
+ *
+ * The file keeps one entry PER AGENT as well as the current holder, because the
+ * holder is a single slot and attribution is not. An interview turn reserves the
+ * floor before it has any words (`takeFloor(pin, agent, '', 45_000)`), and a leg
+ * whose claim is refused speaks anyway; in both cases the holder's text is empty
+ * or stale while its co-host is the one actually talking. Credit a heard line to
+ * whichever agent's own recent words it echoes, and the single slot stops
+ * deciding whose voice this is.
+ */
 export function takeFloor(pin, agent, text = '', minimumMs = 0) {
 	try {
 		return withFloorLock(pin, () => {
 			if (floorTakenByOther(pin, agent)) return false;
-			const file = floorFile(pin);
-			const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-			// The words go in with the claim: a leg hearing something while the other
-			// holds the floor needs them to tell its co-host's voice from a person's.
-			writeFileSync(temp, JSON.stringify({ agent, at: Date.now(), until: Date.now() + Math.max(minimumMs, 2500 + (String(text).length / 14) * 1000), text: String(text).slice(0, 600) }));
-			renameSync(temp, file);
+			writeFloor(pin, agent, String(text), Math.max(minimumMs, 2500 + (String(text).length / 14) * 1000));
 			return true;
 		});
 	} catch { return false; }
 }
-/** The other agent speaking now or within `afterMs` of finishing: its words, not a person's. */
-function otherAgentTalking(pin, agent, afterMs = 1500) {
-	try {
-		const f = JSON.parse(readFileSync(floorFile(pin), 'utf8'));
-		if (f.agent === agent) return '';
-		if (f.until > Date.now()) return f.agent;
-		return Date.now() - statSync(floorFile(pin)).mtimeMs < afterMs ? f.agent : '';
-	} catch {
-		return '';
+/**
+ * Write the claim: the holder slot, plus this agent's own line under `said`.
+ *
+ * A reservation (no words yet) must not erase the words this agent last spoke —
+ * its co-host is still hearing them come back off the line.
+ */
+function writeFloor(pin, agent, text, forMs) {
+	const file = floorFile(pin);
+	let prev = {};
+	try { prev = JSON.parse(readFileSync(file, 'utf8')); } catch {}
+	const now = Date.now();
+	const said = { ...(prev.said && typeof prev.said === 'object' ? prev.said : {}) };
+	// Carry the old single-slot shape forward, so a leg already on a call is not
+	// suddenly a stranger to one that restarts.
+	if (prev.agent && prev.text && !said[prev.agent]) said[prev.agent] = { at: Number(prev.at) || now, text: String(prev.text) };
+	if (text.trim()) said[agent] = { at: now, text: text.slice(0, 600) };
+	for (const [who, entry] of Object.entries(said)) {
+		if (now - (Number(entry?.at) || 0) > CO_HOST_MEMORY_MS) delete said[who];
 	}
+	const temp = `${file}.${process.pid}.${now}.tmp`;
+	writeFileSync(temp, JSON.stringify({ agent, at: now, until: now + forMs, text: text.slice(0, 600), said }));
+	renameSync(temp, file);
 }
-/** What the other agent is saying right now, as it claimed the floor. */
-function floorSpeech(pin, agent) {
+/**
+ * Record what this agent is saying without claiming the floor, for the case where
+ * the claim was refused or lost a race: the co-host still has to recognise these
+ * words as ours rather than hear them as the guest.
+ */
+export function noteSaid(pin, agent, text) {
+	if (!String(text).trim()) return;
+	try {
+		withFloorLock(pin, () => {
+			const file = floorFile(pin);
+			let prev = {};
+			try { prev = JSON.parse(readFileSync(file, 'utf8')); } catch {}
+			const now = Date.now();
+			const said = { ...(prev.said && typeof prev.said === 'object' ? prev.said : {}) };
+			said[agent] = { at: now, text: String(text).slice(0, 600) };
+			for (const [who, entry] of Object.entries(said)) {
+				if (now - (Number(entry?.at) || 0) > CO_HOST_MEMORY_MS) delete said[who];
+			}
+			const temp = `${file}.${process.pid}.${now}.tmp`;
+			writeFileSync(temp, JSON.stringify({ ...prev, said }));
+			renameSync(temp, file);
+			return true;
+		});
+	} catch {}
+}
+/** How long a co-host's line stays its own: the time its audio can still be coming back. */
+const CO_HOST_MEMORY_MS = 30_000;
+/**
+ * What each OTHER agent on this room has said lately, newest first — whoever
+ * holds the floor. One entry per agent, kept apart on purpose: merging them into
+ * one bag of words would make a guest's short answer look like an echo of
+ * something.
+ */
+export function coHostSpeech(pin, agent) {
 	try {
 		const f = JSON.parse(readFileSync(floorFile(pin), 'utf8'));
-		return f.agent !== agent ? String(f.text || '') : '';
+		const said = f.said && typeof f.said === 'object' ? { ...f.said } : {};
+		// Old single-slot files, and a leg writing one while this one reads.
+		if (f.agent && f.text && !said[f.agent]) said[f.agent] = { at: Number(f.at) || 0, text: String(f.text) };
+		return Object.entries(said)
+			.filter(([who, entry]) => who !== agent && String(entry?.text || '').trim() && Date.now() - (Number(entry?.at) || 0) < CO_HOST_MEMORY_MS)
+			.sort((a, b) => Number(b[1].at) - Number(a[1].at))
+			.map(([who, entry]) => ({ agent: who, text: String(entry.text) }));
 	} catch {
-		return '';
+		return [];
 	}
 }
 
@@ -826,6 +887,23 @@ async function main() {
 	};
 	const speak = async (rawText) => {
 		const text = sayable(rawText);
+		/**
+		 * One voice at a time, enforced here rather than only at the turn.
+		 *
+		 * Every path that speaks ends up in this function, and a claim refused
+		 * means the co-host is mid-sentence. Speaking anyway talks over it AND
+		 * leaves our words with no claim behind them, so the co-host hears them as
+		 * the guest: on episode 8 both hosts asked the guest how many bare metal
+		 * servers he runs within four seconds, and one of them then answered the
+		 * other's question as though the guest had asked it.
+		 */
+		if (join && floorTakenByOther(a.pin, agent)) {
+			try {
+				appendFileSync(logFile, `${new Date().toISOString().slice(11, 23)} [yielded to ${floorHolder(a.pin)}] ${text.slice(0, 80)}\n`);
+			} catch {}
+			speaking = false;
+			return;
+		}
 		try {
 			appendFileSync(logFile, `${new Date().toISOString().slice(11, 23)} [spoke-start]\n`);
 		} catch {}
@@ -843,7 +921,12 @@ async function main() {
 		 * the turn is decided, so the claim has to cover the render as well as the
 		 * speech, and `playNextChunk` extends it once the real length is known.
 		 */
-		if (join) takeFloor(a.pin, agent, text, Math.max(20_000, (String(text).length / 11) * 1000 + 15_000));
+		// Claim it for the render plus the speech; and whether or not the claim
+		// lands, the words go on the record so the co-host can place them.
+		if (join) {
+			takeFloor(a.pin, agent, text, Math.max(20_000, (String(text).length / 11) * 1000 + 15_000));
+			noteSaid(a.pin, agent, text);
+		}
 		// Our own voice, off the c0mpute network: render the line and play the file.
 		if (renderingOurselves()) {
 			playQueue = speechChunks(text);
@@ -1206,10 +1289,10 @@ async function main() {
 					} catch {}
 					break;
 				}
-				const holder = join ? otherAgentTalking(a.pin, agent) : '';
-				// Credited to the co-host only when it IS the co-host: anything else
-				// said while it holds the floor is a person, and falls through below.
-				const otherAgent = holder && echoesFloor(d.transcript, floorSpeech(a.pin, agent)) ? holder : '';
+				// Credited to a co-host only when the words are ITS words, whoever
+				// holds the floor: the holder is one slot and both hosts talk. A line
+				// that echoes nobody is a person, and a person always gets through.
+				const otherAgent = join ? (coHostSpeech(a.pin, agent).find((s) => echoesFloor(d.transcript, s.text))?.agent ?? '') : '';
 				if (otherAgent) {
 					// The other agent talking: context, not a question for us (unless it names us).
 					transcript.push({ who: otherAgent, text: d.transcript.trim(), at: new Date().toISOString() });
