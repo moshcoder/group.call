@@ -282,6 +282,21 @@ test('each agent keeps a few recent lines, not the whole call', () => {
   worker.releaseFloor(pin, 'riotcoder');
 });
 
+test('a host saying its own name is not the guest, however the transcriber spells it', () => {
+  // The rehearsal: riotcoder said "I'm RiotCoder, Anthony's AI assistant and
+  // co-host" and the transcriber wrote "I'm Riot Coder." Two tokens never
+  // matched the one word the host said, so the overlap fell to 1/3 and the host
+  // introducing itself was logged as `room:` - the guest.
+  const floor = "I'm RiotCoder, Anthony's AI assistant and co-host,";
+  assert.equal(worker.echoesFloor("I'm Riot Coder.", floor), true);
+  assert.equal(worker.echoesFloor('Hello. I am Chaos Punk, an AI assistant and co host.', "Hello, I'm ChaosPunk, an AI assistant and co-host."), true);
+  // 0 read as o, both ways.
+  assert.equal(worker.echoesFloor('chaospunk here', 'cha0spunk here'), true);
+  // The guest still gets through, and a generic word is not a name.
+  assert.equal(worker.echoesFloor('Can you hear me?', floor), false);
+  assert.equal(worker.echoesFloor('We run our own security and nothing else', 'rootkey handles the scanning for us'), false);
+});
+
 test('a model that says PASS is saying nothing, not reading the word out', () => {
   assert.deepEqual(worker.parseTurn('SAY: PASS'), { kind: 'pass', text: '' });
   assert.deepEqual(worker.parseTurn('PASS'), { kind: 'pass', text: '' });

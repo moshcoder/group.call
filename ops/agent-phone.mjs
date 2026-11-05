@@ -457,10 +457,26 @@ export function coHostSpeech(pin, agent) {
  * all of the time. So compare: words that are in what the co-host is saying are
  * its echo; words that are not are a person, and a person always gets through.
  */
+/**
+ * Every multi-word spelling of an agent's name, longest first: the transcriber
+ * splits our made-up names into two words ("RiotCoder" comes back as "Riot
+ * Coder", "ChaosPunk" as "chaos punk"), and two tokens never match the one the
+ * host actually said. Only the multi-word aliases are collapsed - single generic
+ * ones like "security" or "chaos" would merge words the guest is entitled to use
+ * himself.
+ */
+const SPLIT_NAMES = Object.entries(NAME_ALIASES)
+	.flatMap(([agent, names]) => names.filter((n) => n.includes(' ')).map((n) => [n, agent.replace(/0/g, 'o')]))
+	.sort((a, b) => b[0].length - a[0].length);
+/** One spelling of a name per token, so "Riot Coder" and "RiotCoder" are the same word. */
+function oneWordNames(text) {
+	let t = String(text).toLowerCase().replace(/0/g, 'o');
+	for (const [alias, agent] of SPLIT_NAMES) t = t.split(alias).join(agent);
+	return t;
+}
 export function echoesFloor(heard, floorText) {
 	const words = (text) =>
-		String(text)
-			.toLowerCase()
+		oneWordNames(text)
 			.replace(/[^a-z0-9' ]+/g, ' ')
 			.split(/\s+/)
 			.filter((w) => w.length > 2);
