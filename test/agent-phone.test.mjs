@@ -189,3 +189,22 @@ test('a line our network cannot render is null, so the call falls back instead o
   assert.equal(await worker.renderOnC0mpute('  ', { agent: 'riotcoder', base: 'https://otr.test', key: 'k', id: '1', fetcher: spy }), null);
   assert.equal(called, false);
 });
+
+test('a person talking while a host speaks is heard, not credited to the host', () => {
+  const floor = 'What was the first challenge you faced when deploying your AI coding agents';
+  // The co-host's own voice coming back through the conference.
+  assert.equal(worker.echoesFloor('What was the first challenge you faced when deploying', floor), true);
+  // A person talking over it. This is the one that matters: crediting these to
+  // the co-host threw the guest's answers away on a live episode.
+  assert.equal(worker.echoesFloor('Can you hear me?', floor), false);
+  assert.equal(worker.echoesFloor("Yeah, let us focus this on the interview. Hello?", floor), false);
+  assert.equal(worker.echoesFloor('I am my own customer, but I pay myself using my balance', floor), false);
+  // Nothing claimed on the floor means nothing to echo.
+  assert.equal(worker.echoesFloor('anything at all', ''), false);
+});
+
+test('a model that says PASS is saying nothing, not reading the word out', () => {
+  assert.deepEqual(worker.parseTurn('SAY: PASS'), { kind: 'pass', text: '' });
+  assert.deepEqual(worker.parseTurn('PASS'), { kind: 'pass', text: '' });
+  assert.deepEqual(worker.parseTurn('SAY: Where did this start?'), { kind: 'say', text: 'Where did this start?' });
+});
