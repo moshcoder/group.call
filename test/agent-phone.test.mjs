@@ -118,3 +118,74 @@ test('all room agents can recognize their spoken names and avoid answering for a
     }
   }
 });
+
+// ---- our own voices, rendered on c0mpute ---------------------------------------------
+
+test("each agent's Kokoro voice is the one its OpenProfile names", () => {
+  assert.equal(worker.kokoroVoiceFor('riotcoder'), 'am_michael');
+  assert.equal(worker.kokoroVoiceFor('cha0spunk'), 'af_bella');
+  // An agent with no profile voice still gets one rather than nothing.
+  assert.equal(worker.kokoroVoiceFor('nobody'), 'am_michael');
+});
+
+test('the voice engine decides where the audio is made, and never falls back to ElevenLabs', () => {
+  // Our own network: the prefix tells speak() to render a file and play it.
+  assert.equal(worker.voiceFor('riotcoder', '', false, 'c0mpute'), 'c0mpute:am_michael');
+  assert.equal(worker.voiceFor('cha0spunk', '', false, 'c0mpute'), 'c0mpute:af_bella');
+  // The same model, rendered by Telnyx, for when our gateway is out of reach.
+  assert.equal(worker.voiceFor('cha0spunk', '', false, 'kokoro'), 'Telnyx.KokoroTTS.af_bella');
+  // No engine asked for: unchanged behaviour.
+  assert.equal(worker.voiceFor('riotcoder'), `ElevenLabs.Default.iP95p4xoKVk53GoZ742B`);
+  // An explicit override still wins over the engine.
+  assert.equal(worker.voiceFor('riotcoder', 'AWS.Polly.Matthew-Neural', false, 'c0mpute'), 'AWS.Polly.Matthew-Neural');
+});
+
+test('a turn is split so the first clause can start while the rest renders', () => {
+  assert.deepEqual(worker.speechChunks('Welcome to Off The Record. Anthony, where did this start?'), [
+    'Welcome to Off The Record.',
+    'Anthony, where did this start?',
+  ]);
+  // One sentence stays one chunk; an empty turn is nothing to say.
+  assert.deepEqual(worker.speechChunks('Just the one sentence here'), ['Just the one sentence here']);
+  assert.deepEqual(worker.speechChunks('   '), []);
+  // Never more chunks than the cap, however many sentences arrive.
+  const many = worker.speechChunks('One. Two. Three. Four. Five. Six. Seven. Eight.', { limit: 3 });
+  assert.ok(many.length <= 3, `expected at most 3 chunks, got ${many.length}`);
+  assert.equal(many.join(' '), 'One. Two. Three. Four. Five. Six. Seven. Eight.');
+  // Whole clauses only: Kokoro's prosody needs them, and no chunk is empty.
+  for (const chunk of many) assert.ok(chunk.trim().length > 0);
+});
+
+test('rendering on c0mpute asks the show for the line and answers with a URL to play', async () => {
+  const asked = [];
+  const fetcher = async (url, init) => {
+    asked.push({ url: String(url), headers: init.headers, body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({ url: 'https://otr.test/speech/abc.wav', seconds: 3.6, synthMs: 1672, voice: 'am_michael' }));
+  };
+  const line = await worker.renderOnC0mpute('Where did this start?', {
+    agent: 'riotcoder',
+    base: 'https://otr.test/',
+    key: 'admin_key',
+    id: 'sess-1',
+    fetcher,
+  });
+  assert.equal(line.url, 'https://otr.test/speech/abc.wav');
+  assert.equal(line.seconds, 3.6);
+  assert.equal(asked[0].url, 'https://otr.test/api/v1/speech/say');
+  assert.equal(asked[0].headers.authorization, 'Bearer admin_key');
+  assert.deepEqual(asked[0].body, { agent: 'riotcoder', text: 'Where did this start?', id: 'sess-1' });
+});
+
+test('a line our network cannot render is null, so the call falls back instead of hanging', async () => {
+  const no = async () => new Response('nope', { status: 503 });
+  assert.equal(await worker.renderOnC0mpute('hello', { agent: 'riotcoder', base: 'https://otr.test', key: 'k', id: '1', fetcher: no }), null);
+  // An answer that is not a playable URL is no good either.
+  const junk = async () => new Response(JSON.stringify({ url: 'not-a-url' }));
+  assert.equal(await worker.renderOnC0mpute('hello', { agent: 'riotcoder', base: 'https://otr.test', key: 'k', id: '1', fetcher: junk }), null);
+  // Nothing configured, or nothing to say: no request at all.
+  let called = false;
+  const spy = async () => ((called = true), new Response('{}'));
+  assert.equal(await worker.renderOnC0mpute('hello', { agent: 'riotcoder', base: '', key: '', id: '1', fetcher: spy }), null);
+  assert.equal(await worker.renderOnC0mpute('  ', { agent: 'riotcoder', base: 'https://otr.test', key: 'k', id: '1', fetcher: spy }), null);
+  assert.equal(called, false);
+});
