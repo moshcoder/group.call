@@ -376,6 +376,23 @@ test('a line older than the memory window is never what was just said', () => {
   assert.equal(stale({ id: 3, at: 0 }), false);
 });
 
+test('a caller that knows when this sitting began says so', () => {
+  // Takes come back to back: episodes 8 and 9 were twenty-one minutes apart in
+  // the same room, so a flat thirty-minute window would hand the second one the
+  // first one's transcript. The show knows when the episode started; the leg
+  // does not.
+  const episodeStart = now - 90 * 1000;
+  assert.equal(worker.memorySinceFrom(new Date(episodeStart).toISOString(), now), episodeStart);
+  assert.equal(worker.memorySinceFrom(String(episodeStart), now), episodeStart);
+  // No flag: the default window.
+  assert.equal(worker.memorySinceFrom(undefined, now), now - worker.ROOM_MEMORY_MS);
+  assert.equal(worker.memorySinceFrom('', now), now - worker.ROOM_MEMORY_MS);
+  // Nonsense is ignored rather than trusted: a bad flag must not blank the
+  // context a rejoin depends on.
+  assert.equal(worker.memorySinceFrom('tomorrow-ish', now), now - worker.ROOM_MEMORY_MS);
+  assert.equal(worker.memorySinceFrom('0', now), now - worker.ROOM_MEMORY_MS);
+});
+
 test('a model that says PASS is saying nothing, not reading the word out', () => {
   assert.deepEqual(worker.parseTurn('SAY: PASS'), { kind: 'pass', text: '' });
   assert.deepEqual(worker.parseTurn('PASS'), { kind: 'pass', text: '' });
