@@ -534,7 +534,10 @@ async function main() {
 	const agent = typeof a.agent === 'string' ? a.agent : process.env.QC_AGENT || 'riotcoder';
 	/** Sent by a room's greeter setting: keep an early caller company until the host joins, then leave. */
 	const greeter = join && a.role === 'greeter';
-	const maxMinutes = Math.min(join ? 60 : 30, Math.max(1, Number(a['max-minutes']) || (join ? 30 : 10)));
+	// A show's leg has to outlast the show: a 60-minute cap cut the sign-off off
+	// the end of a 60-minute format. Still bounded, so a runaway leg cannot sit on
+	// the line forever.
+	const maxMinutes = Math.min(join ? 125 : 30, Math.max(1, Number(a['max-minutes']) || (join ? 30 : 10)));
 	const persona = a.podcast
 		? (agent === 'riotcoder' ? 'RiotCoder, Anthony\'s AI assistant and co-host.' : 'Chaospunk, an AI assistant and co-host.')
 		: (() => {
