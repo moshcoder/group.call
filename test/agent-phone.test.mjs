@@ -327,6 +327,25 @@ test('a joined leg can work out where the room status lives', () => {
   assert.equal(worker.statusUrlFor('https://group.call.pit.world/', '8625'), 'https://group.call.pit.world/api/v1/agent-queue/rooms/8625');
 });
 
+test("the room's record is memory of this call, not of the last episode", () => {
+  // A room keeps its transcript between calls and Off The Record records every
+  // episode in room 8625, so loading the last 80 lines unbounded opened a new
+  // episode with the previous one in the hosts' heads: "[memory] 80 earlier lines
+  // loaded" followed by questions about a Bitcoin loss from weeks before. Their
+  // brief forbids exactly that - never say "you mentioned" about something that
+  // is not in this call.
+  const lines = [
+    { id: 1, who: 'Anthony', kind: 'person', text: 'from the last episode', at: now - 60 * minute },
+    { id: 2, who: 'riotcoder', kind: 'agent', text: 'also last episode', at: now - 31 * minute },
+    { id: 3, who: 'Anthony', kind: 'person', text: 'this call, after a drop', at: now - 2 * minute },
+  ];
+  const since = now - worker.ROOM_MEMORY_MS;
+  const kept = lines.filter((l) => Number(l.at) >= since).slice(-80);
+  assert.deepEqual(kept.map((l) => l.id), [3]);
+  // Long enough to rejoin a call that dropped a few minutes ago.
+  assert.ok(worker.ROOM_MEMORY_MS >= 10 * minute);
+});
+
 test('a model that says PASS is saying nothing, not reading the word out', () => {
   assert.deepEqual(worker.parseTurn('SAY: PASS'), { kind: 'pass', text: '' });
   assert.deepEqual(worker.parseTurn('PASS'), { kind: 'pass', text: '' });
