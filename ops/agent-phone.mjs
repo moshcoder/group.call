@@ -428,6 +428,18 @@ export function noteSaid(pin, agent, text) {
  * recorded in the same room is not mistaken for this one.
  */
 export const ROOM_MEMORY_MS = 30 * 60_000;
+/**
+ * When this call's memory starts: an explicit --memory-since (ISO or epoch ms),
+ * else the default window back from now. A value that does not parse is ignored
+ * rather than trusted, so a bad flag cannot blank a rejoin's context.
+ */
+export function memorySinceFrom(given, now = Date.now()) {
+	const fallback = now - ROOM_MEMORY_MS;
+	if (given === undefined || given === null || String(given).trim() === '') return fallback;
+	const text = String(given).trim();
+	const at = /^\d+$/.test(text) ? Number(text) : Date.parse(text);
+	return Number.isFinite(at) && at > 0 ? at : fallback;
+}
 /** Where a joined leg asks the room who is on the line and what was said. */
 export function statusUrlFor(base, pin) {
 	return `${String(base).replace(/\/+$/, '')}/api/v1/agent-queue/rooms/${pin}`;
@@ -720,7 +732,7 @@ async function main() {
 	if (a._[0] === 'groupcall-worker') return groupcallWorker(a);
 	const join = a._[0] === 'join';
 	if (join && !/^\d{4,8}$/.test(String(a.pin || ''))) {
-		console.error('Usage: agent-phone join <number> --pin 4821 [--room "Standup"] [--goal "..."] [--agent riotcoder] [--max-minutes 30] [--role greeter] [--json]');
+		console.error('Usage: agent-phone join <number> --pin 4821 [--room "Standup"] [--goal "..."] [--agent riotcoder] [--max-minutes 30] [--role greeter] [--memory-since <iso>] [--json]');
 		process.exit(2);
 	}
 	if (join && typeof a.goal !== 'string') a.goal = 'You were invited to join this group call. Introduce yourself briefly, then listen, and help when someone asks you something.';
@@ -818,6 +830,17 @@ async function main() {
 	// rejoin (a drop, a crash, a deploy) picks up the conversation instead of starting over.
 	let rejoin = false;
 	let afterId = 0;
+	/**
+	 * How far back the room's record counts as this call's memory.
+	 *
+	 * Thirty minutes by default - long enough to rejoin a call that dropped,
+	 * short enough that an episode recorded earlier in the room is not mistaken
+	 * for this one. But takes come back to back: episodes 8 and 9 were twenty-one
+	 * minutes apart in the same room, so the default would have handed the second
+	 * one the first one's transcript. A caller that knows when this sitting began
+	 * says so with --memory-since, and nothing before it is ours.
+	 */
+	const memorySince = memorySinceFrom(a['memory-since']);
 	const roomHeaders = { authorization: `Bearer ${process.env.GROUPCALL_AGENT_WORKER_KEY}` };
 	if (join && process.env.GROUPCALL_STATUS_URL) {
 		const r = await fetch(process.env.GROUPCALL_STATUS_URL, { headers: roomHeaders }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
@@ -850,7 +873,7 @@ async function main() {
 		 * That is also the one thing their brief forbids - never say "you mentioned"
 		 * about something that is not in this call.
 		 */
-		const since = Date.now() - ROOM_MEMORY_MS;
+		const since = memorySince;
 		if (r) r.history = (all?.lines || r.history || []).filter((l) => Number(l?.at) >= since).slice(-80);
 		for (const l of r?.history || []) {
 			const at = new Date(l.at).toISOString();
@@ -905,10 +928,10 @@ async function main() {
 			for (const l of r.lines || []) {
 				afterId = Math.max(afterId, l.id);
 				if (ended || (l.kind === 'agent' && l.who === agent)) continue;
-				// Old enough to be another call: never "what was just said". The mark
-				// can start behind (a short page, a room that was pruned), and a line
-				// from last week must not arrive as a line from this second.
-				if (Number(l.at) && Date.now() - Number(l.at) > ROOM_MEMORY_MS) continue;
+				// Before this call began: never "what was just said". The mark can start
+				// behind (a short page, a room that was pruned), and a line from the
+				// last episode must not arrive as a line from this second.
+				if (Number(l.at) && Number(l.at) < memorySince) continue;
 				if (l.kind === 'agent') {
 					transcript.push({ who: l.who, text: l.text, at: new Date().toISOString() });
 					try {
