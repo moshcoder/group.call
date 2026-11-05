@@ -95,7 +95,13 @@ export function voiceFor(agent, override = '', skipElevenLabs = false, engine = 
  * is never cut mid-sentence and never shorter than `min` unless it is the last
  * one.
  */
-export function speechChunks(text, { max = 240, limit = 4 } = {}) {
+/**
+ * Two chunks at most: the gap between one chunk and the next is a webhook round
+ * trip (about a second, measured), so more chunks buy a faster first word at the
+ * cost of a pause in the middle of a sentence. One split, at the end of the
+ * first sentence, sounds like someone drawing breath.
+ */
+export function speechChunks(text, { max = 240, limit = 2 } = {}) {
 	const line = String(text).replace(/\s+/g, ' ').trim();
 	if (!line) return [];
 	const sentences = (line.match(/[^.!?]+(?:[.!?]+|$)/g) ?? [line]).map((s) => s.trim()).filter(Boolean);
