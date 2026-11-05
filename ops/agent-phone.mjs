@@ -1136,7 +1136,19 @@ async function main() {
 				const last = [...transcript].reverse().find((t) => !t.history && t.who !== agent);
 				return Boolean(last && last.who === partnerAgent);
 			})();
-			if (join && a.interview && !firstTurn) {
+			/**
+			 * Co-host coordination, on EVERY turn including the first one.
+			 *
+			 * This used to be gated on `!firstTurn`, and `firstTurn` is true
+			 * whenever the agent has not spoken for three minutes. The hosts dial in
+			 * and then wait in an empty room while the guest is rung, which is nearly
+			 * always longer than that - so on the guest's very first words both hosts
+			 * counted as introducing themselves, skipped the stagger, the reservation
+			 * and the do-not-answer-your-co-host rule, and talked over each other in
+			 * the first ten seconds of the show. Episode 9 ended twenty seconds after
+			 * Anthony said hello and got two overlapping introductions.
+			 */
+			if (join && a.interview) {
 				// Never answer a question the co-host put to the guest.
 				if (partnerSpokeLast && !mine) return;
 				if (!mine) {
@@ -1213,7 +1225,13 @@ async function main() {
 				const lastHeard = recentSpeech();
 				const mine = addressed(agent, lastHeard);
 				const otherNamed = Object.keys(NAME_ALIASES).some((o) => o !== agent && addressed(o, lastHeard)) && !mine;
-				const introduced = !shouldIntroduce(agent, transcript, Date.now());
+				/**
+				 * Whether this agent has spoken on this call at all - NOT whether it
+				 * spoke recently. These guards stop two hosts answering the same line,
+				 * and tying them to introduction staleness turned them off after any
+				 * three-minute lull: exactly the long guest answer the format asks for.
+				 */
+				const introduced = transcript.some((t) => t.who === agent && !t.history);
 				if (introduced && kind !== 'hangup' && otherNamed) return;
 				// The other agent already answered what we are answering: leave it, unless it was ours by name.
 				const lineAt = Date.parse([...transcript].reverse().find((t) => t.who === 'them')?.at || '') || 0;
