@@ -422,6 +422,12 @@ export function noteSaid(pin, agent, text) {
 		});
 	} catch {}
 }
+/**
+ * How far back a joined leg reads the room's record as its own memory: long
+ * enough to rejoin a call it dropped out of, short enough that the last episode
+ * recorded in the same room is not mistaken for this one.
+ */
+export const ROOM_MEMORY_MS = 30 * 60_000;
 /** Where a joined leg asks the room who is on the line and what was said. */
 export function statusUrlFor(base, pin) {
 	return `${String(base).replace(/\/+$/, '')}/api/v1/agent-queue/rooms/${pin}`;
@@ -817,7 +823,18 @@ async function main() {
 		const r = await fetch(process.env.GROUPCALL_STATUS_URL, { headers: roomHeaders }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
 		const all = await fetch(`${process.env.GROUPCALL_STATUS_URL}/lines?after=0&wait=0`, { headers: roomHeaders }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
 		afterId = all?.lines?.at(-1)?.id || 0;
-		if (r) r.history = (all?.lines || r.history || []).slice(-80);
+		/**
+		 * Recent lines only. The room's record is our memory so that a drop, a crash
+		 * or a deploy picks the conversation up instead of starting over - and a
+		 * redial takes seconds, a restart a minute. But a room keeps its transcript
+		 * between calls, and Off The Record records every episode in the same room:
+		 * unbounded, a new episode opened with eighty lines of the LAST one, so the
+		 * hosts started the show holding things the guest had said weeks earlier.
+		 * That is also the one thing their brief forbids - never say "you mentioned"
+		 * about something that is not in this call.
+		 */
+		const since = Date.now() - ROOM_MEMORY_MS;
+		if (r) r.history = (all?.lines || r.history || []).filter((l) => Number(l?.at) >= since).slice(-80);
 		for (const l of r?.history || []) {
 			const at = new Date(l.at).toISOString();
 			if (l.kind === 'agent' && l.who === agent) transcript.push({ who: agent, text: l.text, at, history: true });
