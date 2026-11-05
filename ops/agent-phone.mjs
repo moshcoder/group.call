@@ -898,7 +898,17 @@ async function main() {
 			// The co-host asked the guest something and the guest has not answered:
 			// the worst thing either host can do is answer it for him.
 			if (last && last.who === partnerAgent) return `\n\n${partner} just spoke and THE GUEST HAS NOT ANSWERED YET. Say nothing: PASS. Never answer a question ${partner} put to the guest.`;
-			return `\n\nTHE GUEST JUST FINISHED AN ANSWER and you have the floor. Ask your next question now with SAY: one or two sentences, specific, following up on what he actually said. Do not PASS, do not summarise his answer back to him, and do not ask ${partner} anything unless you are handing the topic over.`;
+			/**
+			 * A short answer means move on.
+			 *
+			 * On the first co-hosted episode the guest said "I'm checking into that
+			 * now", was asked the same thing again in different words, said "I'm
+			 * looking into it", and hung up. A guest who has nothing more to say on
+			 * a point has told you so; pressing it is how you lose him.
+			 */
+			const lastHeard = [...transcript].reverse().find((t) => t.who === 'them' && !t.history)?.text ?? '';
+			const thin = lastHeard.split(/\s+/).filter(Boolean).length <= 8;
+			return `\n\nTHE GUEST JUST FINISHED AN ANSWER and you have the floor. Ask your next question now with SAY: one or two sentences, specific, following up on what he actually said. Do not PASS, do not summarise his answer back to him, and do not ask ${partner} anything unless you are handing the topic over.${thin ? ` HIS LAST ANSWER WAS SHORT ("${lastHeard.slice(0, 80)}"), which means he has nothing more to say about it. Do NOT ask about that point again in any words. Move to a different subject entirely.` : ''} Read the transcript above before you speak: if a question like yours has already been asked on this call, ask something else.`;
 		}
 		if (a.podcast) {
 			const partnerLine = [...transcript].reverse().find((t) => t.who !== agent && !t.history);
