@@ -701,7 +701,7 @@ async function main() {
 	const renderNextChunk = () => {
 		const text = playQueue.shift();
 		if (text === undefined) return null;
-		return renderOnC0mpute(text, { agent, base: speechBase, key: speechKey, id: `${session}-${++speechSeq}` });
+		return renderOnC0mpute(text, { agent, base: speechBase, key: speechKey, id: `${session}-${++speechSeq}` }).then((line) => (line ? { ...line, text } : null));
 	};
 	/**
 	 * Play the next chunk of this turn, keeping one chunk rendering ahead of the
@@ -721,6 +721,9 @@ async function main() {
 			return false;
 		}
 		armSpeechWatchdog(line.seconds);
+		// Now the length is known: hold the floor for exactly as long as this plays,
+		// plus the webhook round trip to the next chunk.
+		if (join) takeFloor(a.pin, agent, line.text ?? '', (line.seconds + 8) * 1000);
 		try {
 			appendFileSync(logFile, `${new Date().toISOString().slice(11, 23)} [c0mpute ${line.voice} ${line.seconds}s synth ${line.synthMs}ms]\n`);
 		} catch {}
@@ -747,6 +750,17 @@ async function main() {
 		if (spoken.length > 4) spoken.shift();
 		speaking = true;
 		armSpeechWatchdog();
+		/**
+		 * Claim the floor for anything we say, including the first thing.
+		 *
+		 * The other agent decides whether a line it hears is a person talking or
+		 * its co-host by who holds the floor; an opening line said without it
+		 * reaches the co-host as a stranger's voice, and two hosts then interview
+		 * each other. Rendering makes this worse: the audio starts seconds after
+		 * the turn is decided, so the claim has to cover the render as well as the
+		 * speech, and `playNextChunk` extends it once the real length is known.
+		 */
+		if (join) takeFloor(a.pin, agent, text, Math.max(20_000, (String(text).length / 11) * 1000 + 15_000));
 		// Our own voice, off the c0mpute network: render the line and play the file.
 		if (renderingOurselves()) {
 			playQueue = speechChunks(text);
@@ -830,6 +844,13 @@ async function main() {
 			const newest = recentSpeech();
 			const partner = agent === 'riotcoder' ? 'ChaosPunk' : 'RiotCoder';
 			const partnerAgent = agent === 'riotcoder' ? 'cha0spunk' : 'riotcoder';
+			// Nobody has spoken but the hosts: the show has not started, so there is
+			// no answer to follow up on and nothing to interview.
+			if (!transcript.some((t) => t.who === 'them' && !t.history)) {
+				return agent === 'riotcoder'
+					? `\n\nNOBODY HAS SPOKEN YET BUT YOU TWO. The guest is not on the line. Say your opening line to the guest exactly as your brief describes it — greet him, say who is hosting, and brief him on the format — and nothing else. Ask him no questions about his work yet, and never pretend he has already said something. If you have already said it, reply PASS and wait for him.`
+					: `\n\nNOBODY HAS SPOKEN YET BUT YOU TWO. The guest is not on the line and ${partner} opens the show. Say one short warm hello if you have not yet, then reply PASS every turn until the guest speaks. Do not interview ${partner}.`;
+			}
 			if (addressed(agent, newest)) return `\n\nTHE GUEST JUST SPOKE TO YOU BY NAME (speech recognition mangles it). Answer or follow up now with SAY. Do not PASS.`;
 			if (addressed(partnerAgent, newest)) return `\n\nThe guest was speaking to ${partner}, not you: PASS.`;
 			const last = [...transcript].reverse().find((t) => !t.history && t.who !== agent);
