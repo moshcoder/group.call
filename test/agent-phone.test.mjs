@@ -316,6 +316,17 @@ test('a host that has gone quiet is still introduced, so it keeps coordinating',
   assert.equal(transcript.some((l) => l.who === 'cha0spunk' && !l.history), false);
 });
 
+test('a joined leg can work out where the room status lives', () => {
+  // Without this a leg is blind twice over: followRoom never runs, so it guesses
+  // its co-host's voice from audio instead of reading the room's own labelled
+  // transcript, and roomWatch falls back to "twenty quiet minutes" - which is why
+  // episodes 8 and 9 each left two legs dialled into an empty room after the
+  // guest hung up.
+  assert.equal(worker.statusUrlFor('https://group.call.pit.world', '8625'), 'https://group.call.pit.world/api/v1/agent-queue/rooms/8625');
+  // A trailing slash on the configured base is not a double slash in the path.
+  assert.equal(worker.statusUrlFor('https://group.call.pit.world/', '8625'), 'https://group.call.pit.world/api/v1/agent-queue/rooms/8625');
+});
+
 test('a model that says PASS is saying nothing, not reading the word out', () => {
   assert.deepEqual(worker.parseTurn('SAY: PASS'), { kind: 'pass', text: '' });
   assert.deepEqual(worker.parseTurn('PASS'), { kind: 'pass', text: '' });
