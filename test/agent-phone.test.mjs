@@ -297,6 +297,25 @@ test('a host saying its own name is not the guest, however the transcriber spell
   assert.equal(worker.echoesFloor('We run our own security and nothing else', 'rootkey handles the scanning for us'), false);
 });
 
+test('a host that has gone quiet is still introduced, so it keeps coordinating', () => {
+  // shouldIntroduce() is about the PROMPT: say hello if you have not spoken for
+  // three minutes. It used to gate co-host coordination too, and the hosts wait
+  // in an empty room while the guest is rung - always longer than three minutes.
+  // So on the guest's first words both hosts counted as introducing themselves,
+  // skipped the stagger and the reservation, and talked over each other. Episode
+  // 9 ended twenty seconds after Anthony said hello.
+  const transcript = [
+    { who: 'riotcoder', text: 'Welcome to Off The Record.', at: new Date(now - 4 * minute).toISOString() },
+    { who: 'them', text: 'Hello? This is Anthony.', at: new Date(now).toISOString() },
+  ];
+  // Four minutes quiet: the prompt should still ask for a hello...
+  assert.equal(worker.shouldIntroduce('riotcoder', transcript, now), true);
+  // ...but having spoken on this call is a different fact, and the one the
+  // coordination guards now use.
+  assert.equal(transcript.some((l) => l.who === 'riotcoder' && !l.history), true);
+  assert.equal(transcript.some((l) => l.who === 'cha0spunk' && !l.history), false);
+});
+
 test('a model that says PASS is saying nothing, not reading the word out', () => {
   assert.deepEqual(worker.parseTurn('SAY: PASS'), { kind: 'pass', text: '' });
   assert.deepEqual(worker.parseTurn('PASS'), { kind: 'pass', text: '' });
