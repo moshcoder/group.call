@@ -346,6 +346,36 @@ test("the room's record is memory of this call, not of the last episode", () => 
   assert.ok(worker.ROOM_MEMORY_MS >= 10 * minute);
 });
 
+test('catching up on a room reads to the end of the log, not the end of a page', () => {
+  // /lines answers with at most 200, so after=0 returns the OLDEST two hundred
+  // (room 8625: ids 403-602 of a log reaching far past it). Taking the last id of
+  // that single page left the mark mid-log and the stream then delivered
+  // everything after it - weeks of earlier episodes, arriving as though the guest
+  // had just said them.
+  const log = Array.from({ length: 450 }, (_, i) => ({ id: 403 + i, at: now - (450 - i) * 1000 }));
+  const page = (after) => log.filter((l) => l.id > after).slice(0, 200);
+  const collected = [];
+  for (let i = 0; i < 50; i++) {
+    const lines = page(collected.at(-1)?.id ?? 0);
+    if (!lines.length) break;
+    collected.push(...lines);
+    if (lines.length < 200) break;
+  }
+  assert.equal(collected.at(-1).id, log.at(-1).id);
+  // One page would have stopped here, 250 lines short of the end.
+  assert.equal(page(0).at(-1).id, 602);
+});
+
+test('a line older than the memory window is never what was just said', () => {
+  const fresh = { id: 9, at: now - 60_000 };
+  const ancient = { id: 2, at: now - 8 * 24 * 60 * minute };
+  const stale = (l) => Boolean(Number(l.at)) && now - Number(l.at) > worker.ROOM_MEMORY_MS;
+  assert.equal(stale(fresh), false);
+  assert.equal(stale(ancient), true);
+  // A line with no timestamp is not thrown away.
+  assert.equal(stale({ id: 3, at: 0 }), false);
+});
+
 test('a model that says PASS is saying nothing, not reading the word out', () => {
   assert.deepEqual(worker.parseTurn('SAY: PASS'), { kind: 'pass', text: '' });
   assert.deepEqual(worker.parseTurn('PASS'), { kind: 'pass', text: '' });
