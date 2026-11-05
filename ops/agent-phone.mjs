@@ -357,17 +357,49 @@ function writeFloor(pin, agent, text, forMs) {
 	let prev = {};
 	try { prev = JSON.parse(readFileSync(file, 'utf8')); } catch {}
 	const now = Date.now();
-	const said = { ...(prev.said && typeof prev.said === 'object' ? prev.said : {}) };
-	// Carry the old single-slot shape forward, so a leg already on a call is not
-	// suddenly a stranger to one that restarts.
-	if (prev.agent && prev.text && !said[prev.agent]) said[prev.agent] = { at: Number(prev.at) || now, text: String(prev.text) };
-	if (text.trim()) said[agent] = { at: now, text: text.slice(0, 600) };
-	for (const [who, entry] of Object.entries(said)) {
-		if (now - (Number(entry?.at) || 0) > CO_HOST_MEMORY_MS) delete said[who];
-	}
+	const said = mergeSaid(prev, agent, text, now);
 	const temp = `${file}.${process.pid}.${now}.tmp`;
 	writeFileSync(temp, JSON.stringify({ agent, at: now, until: now + forMs, text: text.slice(0, 600), said }));
 	renameSync(temp, file);
+}
+/** At most this many recent lines per agent: a turn is two chunks, and one may be re-claimed. */
+const SAID_PER_AGENT = 4;
+/**
+ * Add a line to what `agent` has said lately, keeping the ones before it.
+ *
+ * A turn is split so playback can start before the whole line is rendered, and
+ * `playNextChunk` re-claims the floor with the chunk it is playing. Keeping only
+ * the latest claim therefore forgot the first half of the sentence while its
+ * transcription was still arriving - which came back as the guest. Keep the last
+ * few lines per agent and match a heard line against each of them.
+ */
+function mergeSaid(prev, agent, text, now = Date.now()) {
+	const said = {};
+	const from = prev?.said && typeof prev.said === 'object' ? prev.said : {};
+	for (const [who, entry] of Object.entries(from)) said[who] = normaliseSaid(entry);
+	// Carry the old single-slot shape forward, so a leg already on a call is not
+	// suddenly a stranger to one that restarts.
+	if (prev?.agent && prev?.text && !said[prev.agent]) said[prev.agent] = [{ at: Number(prev.at) || now, text: String(prev.text) }];
+	const line = String(text ?? '').trim();
+	if (line) {
+		const mine = (said[agent] ?? []).filter((e) => e.text !== line.slice(0, 600));
+		said[agent] = [{ at: now, text: line.slice(0, 600) }, ...mine].slice(0, SAID_PER_AGENT);
+	}
+	for (const [who, lines] of Object.entries(said)) {
+		const fresh = lines.filter((e) => now - e.at < CO_HOST_MEMORY_MS);
+		if (fresh.length) said[who] = fresh;
+		else delete said[who];
+	}
+	return said;
+}
+/** One agent's lines, newest first, from either the list shape or the single-entry one. */
+function normaliseSaid(entry) {
+	const list = Array.isArray(entry) ? entry : entry && typeof entry === 'object' ? [entry] : [];
+	return list
+		.map((e) => ({ at: Number(e?.at) || 0, text: String(e?.text || '') }))
+		.filter((e) => e.text.trim())
+		.sort((a, b) => b.at - a.at)
+		.slice(0, SAID_PER_AGENT);
 }
 /**
  * Record what this agent is saying without claiming the floor, for the case where
@@ -382,11 +414,7 @@ export function noteSaid(pin, agent, text) {
 			let prev = {};
 			try { prev = JSON.parse(readFileSync(file, 'utf8')); } catch {}
 			const now = Date.now();
-			const said = { ...(prev.said && typeof prev.said === 'object' ? prev.said : {}) };
-			said[agent] = { at: now, text: String(text).slice(0, 600) };
-			for (const [who, entry] of Object.entries(said)) {
-				if (now - (Number(entry?.at) || 0) > CO_HOST_MEMORY_MS) delete said[who];
-			}
+			const said = mergeSaid(prev, agent, text, now);
 			const temp = `${file}.${process.pid}.${now}.tmp`;
 			writeFileSync(temp, JSON.stringify({ ...prev, said }));
 			renameSync(temp, file);
@@ -405,13 +433,15 @@ const CO_HOST_MEMORY_MS = 30_000;
 export function coHostSpeech(pin, agent) {
 	try {
 		const f = JSON.parse(readFileSync(floorFile(pin), 'utf8'));
-		const said = f.said && typeof f.said === 'object' ? { ...f.said } : {};
+		const said = {};
+		for (const [who, entry] of Object.entries(f.said && typeof f.said === 'object' ? f.said : {})) said[who] = normaliseSaid(entry);
 		// Old single-slot files, and a leg writing one while this one reads.
-		if (f.agent && f.text && !said[f.agent]) said[f.agent] = { at: Number(f.at) || 0, text: String(f.text) };
+		if (f.agent && f.text && !said[f.agent]) said[f.agent] = [{ at: Number(f.at) || 0, text: String(f.text) }];
+		const now = Date.now();
 		return Object.entries(said)
-			.filter(([who, entry]) => who !== agent && String(entry?.text || '').trim() && Date.now() - (Number(entry?.at) || 0) < CO_HOST_MEMORY_MS)
-			.sort((a, b) => Number(b[1].at) - Number(a[1].at))
-			.map(([who, entry]) => ({ agent: who, text: String(entry.text) }));
+			.filter(([who]) => who !== agent)
+			.flatMap(([who, lines]) => lines.filter((e) => now - e.at < CO_HOST_MEMORY_MS).map((e) => ({ agent: who, text: e.text, at: e.at })))
+			.sort((a, b) => b.at - a.at);
 	} catch {
 		return [];
 	}

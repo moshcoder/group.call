@@ -244,10 +244,41 @@ test('a co-host line goes stale, so an old question never shadows the guest', ()
   assert.deepEqual(worker.coHostSpeech(pin, 'cha0spunk').map((s) => s.agent), ['riotcoder']);
   const file = join(testHome, '.local/share/agent-phone/calls', `floor-${pin}.json`);
   const aged = JSON.parse(readFileSync(file, 'utf8'));
-  aged.said.riotcoder.at = Date.now() - 120_000;
+  for (const line of aged.said.riotcoder) line.at = Date.now() - 120_000;
   aged.text = '';
   writeFileSync(file, JSON.stringify(aged));
   assert.deepEqual(worker.coHostSpeech(pin, 'cha0spunk'), []);
+  worker.releaseFloor(pin, 'riotcoder');
+});
+
+test('a chunked line is still the host\'s own while its first half is transcribed', () => {
+  // A turn is split so playback starts before the whole line renders, and
+  // playNextChunk re-claims the floor with the chunk it is playing. Keeping only
+  // the newest claim forgot the first half of the sentence while its
+  // transcription was still arriving, so it came back as the guest: on the
+  // rehearsal, "And this is a rehearsal, ChaosPunk" was logged as `room:`.
+  const pin = `floor-chunks-${process.pid}`;
+  assert.equal(worker.takeFloor(pin, 'riotcoder', "I'm RiotCoder, an AI assistant and co-host, and this is a rehearsal, ChaosPunk.", 60_000), true);
+  assert.equal(worker.takeFloor(pin, 'riotcoder', "How's the line?", 20_000), true);
+  const heard = worker.coHostSpeech(pin, 'cha0spunk');
+  assert.deepEqual(heard.map((s) => s.agent), ['riotcoder', 'riotcoder']);
+  // Both halves of the turn are recognised as the co-host, not the guest.
+  assert.equal(heard.some((s) => worker.echoesFloor('And this is a rehearsal chaos punk.', s.text)), true);
+  assert.equal(heard.some((s) => worker.echoesFloor("How's the line", s.text)), true);
+  // And the guest still gets through either way.
+  assert.equal(heard.some((s) => worker.echoesFloor('Can you hear me?', s.text)), false);
+  worker.releaseFloor(pin, 'riotcoder');
+});
+
+test('each agent keeps a few recent lines, not the whole call', () => {
+  const pin = `floor-cap-${process.pid}`;
+  for (const line of ['one thing entirely', 'second separate matter', 'third distinct subject', 'fourth unrelated topic', 'fifth other business']) {
+    assert.equal(worker.takeFloor(pin, 'riotcoder', line, 30_000), true);
+  }
+  const heard = worker.coHostSpeech(pin, 'cha0spunk');
+  assert.equal(heard.length, 4);
+  assert.equal(heard[0].text, 'fifth other business');
+  assert.equal(heard.some((s) => s.text === 'one thing entirely'), false);
   worker.releaseFloor(pin, 'riotcoder');
 });
 
