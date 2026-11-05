@@ -105,6 +105,17 @@ export function speechChunks(text, { max = 240, limit = 2 } = {}) {
 	const line = String(text).replace(/\s+/g, ' ').trim();
 	if (!line) return [];
 	const sentences = (line.match(/[^.!?]+(?:[.!?]+|$)/g) ?? [line]).map((s) => s.trim()).filter(Boolean);
+	/**
+	 * A long opening sentence is the whole wait: the guest hears nothing until it
+	 * has rendered. So break it at its last clause boundary instead, which Kokoro
+	 * reads as naturally as a full stop and which halves the silence before the
+	 * first word.
+	 */
+	const first = sentences[0] ?? '';
+	if (first.length > 90) {
+		const comma = first.lastIndexOf(', ', 90);
+		if (comma > 25) sentences.splice(0, 1, first.slice(0, comma + 1), first.slice(comma + 2));
+	}
 	if (sentences.length <= 1) return [line];
 	// The first sentence goes alone: it is what the caller waits for, and a short
 	// one renders in well under a second.
@@ -147,6 +158,22 @@ export async function renderOnC0mpute(text, { agent, base, key, id, fetcher = fe
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * A line as it should be heard, not as it is written.
+ *
+ * A host read "fleetsysops.com" out loud on air. Addresses are for the show
+ * notes; spoken, they are just noise with a dot in them.
+ */
+export function sayable(text) {
+	return String(text)
+		// A whole address becomes just its name: the first label of the host.
+		.replace(/https?:\/\/\S+/gi, (m) => m.replace(/^https?:\/\//i, '').split('/')[0].replace(/^www\./i, '').split('.')[0])
+		// A bare address, however many labels deep, becomes its first name.
+		.replace(/\b(?:www\.)?([a-z0-9][a-z0-9-]*)(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|dev|sh|work|news|world|ai|app|co|me|tech|now|vote|help|info|podcast|agent|hacker)\b/gi, '$1')
+		.replace(/\s{2,}/g, ' ')
+		.trim();
 }
 
 export function identityDtmf(token) {
@@ -444,13 +471,32 @@ const CF_TOKEN = fromWorkerEnv('CF_AI_TOKEN');
  * One turn of the conversation. Use the agent's configured model first; Cloudflare
  * Workers AI and Gemini remain fast fallbacks if that run is unavailable.
  */
-async function brain(agent, prompt) {
-	const selected = await configuredTurn(agent, prompt);
-	if (selected.trim()) return selected;
-	// Keep the existing short-latency providers as fallbacks if the selected engine is unavailable.
+/**
+ * The fast providers, on their own.
+ *
+ * A phone call cannot wait for a thorough answer. The agent's configured model
+ * runs locally and took 4.5-9.7 s a turn on the first co-hosted episodes —
+ * sometimes returning nothing at all — which put ten to thirteen seconds of
+ * silence after every answer the guest gave. On a live show speed beats depth:
+ * a host that replies in two seconds with a decent question is a better host.
+ */
+export async function quickTurn(prompt, { fetcher = fetch } = {}) {
+	if (GEMINI_KEY) {
+		try {
+			const res = await fetcher(`https://generativelanguage.googleapis.com/v1beta/models/${process.env.AGENT_PHONE_GEMINI_MODEL || 'gemini-flash-lite-latest'}:generateContent`, {
+				method: 'POST',
+				headers: { 'x-goog-api-key': GEMINI_KEY, 'content-type': 'application/json' },
+				body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0.5, maxOutputTokens: 300 } }),
+				signal: AbortSignal.timeout(6000),
+			});
+			const data = await res.json();
+			const text = (data?.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join('').trim();
+			if (res.ok && text) return text;
+		} catch {}
+	}
 	if (CF_ACCOUNT && CF_TOKEN) {
 		try {
-			const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/ai/run/${process.env.AGENT_PHONE_CF_MODEL || '@cf/meta/llama-3.3-70b-instruct-fp8-fast'}`, {
+			const res = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/ai/run/${process.env.AGENT_PHONE_CF_MODEL || '@cf/meta/llama-3.3-70b-instruct-fp8-fast'}`, {
 				method: 'POST',
 				headers: { authorization: `Bearer ${CF_TOKEN}`, 'content-type': 'application/json' },
 				body: JSON.stringify({ messages: [{ role: 'user', content: prompt }], max_tokens: 300, temperature: 0.5 }),
@@ -461,19 +507,14 @@ async function brain(agent, prompt) {
 			if (res.ok && text) return text;
 		} catch {}
 	}
-	if (GEMINI_KEY) {
-		try {
-			const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${process.env.AGENT_PHONE_GEMINI_MODEL || 'gemini-flash-lite-latest'}:generateContent`, {
-				method: 'POST',
-				headers: { 'x-goog-api-key': GEMINI_KEY, 'content-type': 'application/json' },
-				body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0.5, maxOutputTokens: 300 } }),
-				signal: AbortSignal.timeout(8000),
-			});
-			const data = await res.json();
-			const text = (data?.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
-			if (res.ok && text) return text;
-		} catch {}
-	}
+	return '';
+}
+
+async function brain(agent, prompt) {
+	const selected = await configuredTurn(agent, prompt);
+	if (selected.trim()) return selected;
+	const quick = await quickTurn(prompt);
+	if (quick) return quick;
 	return '';
 }
 
@@ -783,7 +824,8 @@ async function main() {
 			try { appendFileSync(logFile, `${new Date().toISOString().slice(11, 23)} [speak-timeout]\n`); } catch {}
 		}, Math.max(30_000, (seconds + 20) * 1000)).unref();
 	};
-	const speak = async (text) => {
+	const speak = async (rawText) => {
+		const text = sayable(rawText);
 		try {
 			appendFileSync(logFile, `${new Date().toISOString().slice(11, 23)} [spoke-start]\n`);
 		} catch {}
@@ -908,6 +950,10 @@ async function main() {
 			 */
 			const lastHeard = [...transcript].reverse().find((t) => t.who === 'them' && !t.history)?.text ?? '';
 			const thin = lastHeard.split(/\s+/).filter(Boolean).length <= 8;
+			// He asked US something. Ignoring it to read the next question off the
+			// brief is how the second episode ended: "what's gonna end this?",
+			// unanswered, and he hung up.
+			if (roomQuestion(newest)) return `\n\nTHE GUEST JUST ASKED YOU SOMETHING: "${newest.slice(0, 120)}". Answer it with SAY, directly, in one or two sentences, before anything else. If he is asking how the show ends or how to stop, tell him plainly that he can say "let's wrap up" any time and you will close the episode. Do not ignore him and do not ask your next question in the same breath.`;
 			return `\n\nTHE GUEST JUST FINISHED AN ANSWER and you have the floor. Ask your next question now with SAY: one or two sentences, specific, following up on what he actually said. Do not PASS, do not summarise his answer back to him, and do not ask ${partner} anything unless you are handing the topic over.${thin ? ` HIS LAST ANSWER WAS SHORT ("${lastHeard.slice(0, 80)}"), which means he has nothing more to say about it. Do NOT ask about that point again in any words. Move to a different subject entirely.` : ''} Read the transcript above before you speak: if a question like yours has already been asked on this call, ask something else.`;
 		}
 		if (a.podcast) {
@@ -1007,11 +1053,14 @@ async function main() {
 			const t0 = Date.now();
 			const heardBefore = transcript.filter((t) => t.who === 'them').length;
 			// A show opens the way its brief says to, not with the stock hello.
-			let raw = greetingTurn && !a.podcast && !a.interview ? `SAY: ${agentIntro(agent)}` : await brain(agent, prompt);
+			// On air, ask the fast provider first and only fall back to the slower
+			// configured model if it gives nothing.
+			const think = async () => (a.interview ? (await quickTurn(prompt)) || (await brain(agent, prompt)) : brain(agent, prompt));
+			let raw = greetingTurn && !a.podcast && !a.interview ? `SAY: ${agentIntro(agent)}` : await think();
 			let { kind, text, brief: turnBrief, number: callNumber, message: textMessage } = parseTurn(raw);
 			if (greetingTurn && !text && !ended) {
 				// The hello is not optional: one more try before going quiet.
-				raw = await brain(agent, prompt);
+				raw = await think();
 				({ kind, text, brief: turnBrief, number: callNumber, message: textMessage } = parseTurn(raw));
 			}
 			if ((roomQuestionTurn || mine || greeter) && shouldFallbackRoomResponse(agent, newest, text)) {
