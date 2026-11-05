@@ -821,8 +821,25 @@ async function main() {
 	const roomHeaders = { authorization: `Bearer ${process.env.GROUPCALL_AGENT_WORKER_KEY}` };
 	if (join && process.env.GROUPCALL_STATUS_URL) {
 		const r = await fetch(process.env.GROUPCALL_STATUS_URL, { headers: roomHeaders }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
-		const all = await fetch(`${process.env.GROUPCALL_STATUS_URL}/lines?after=0&wait=0`, { headers: roomHeaders }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
-		afterId = all?.lines?.at(-1)?.id || 0;
+		/**
+		 * Read to the END of the room's record, not to the end of its first page.
+		 *
+		 * /lines returns at most 200 at a time, so `after=0` answers with the OLDEST
+		 * two hundred. Taking the last id of that one page left the mark sitting in
+		 * the middle of the log, and the stream then delivered everything after it -
+		 * weeks of earlier episodes, arriving as though the guest had just said
+		 * them. Page until the room has no more to give.
+		 */
+		const all = { lines: [] };
+		for (let page = 0; page < 50; page++) {
+			const mark = all.lines.at(-1)?.id ?? 0;
+			const r2 = await fetch(`${process.env.GROUPCALL_STATUS_URL}/lines?after=${mark}&wait=0`, { headers: roomHeaders }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+			const lines = r2?.lines || [];
+			if (!lines.length) break;
+			all.lines.push(...lines);
+			if (lines.length < 200) break;
+		}
+		afterId = all.lines.at(-1)?.id || 0;
 		/**
 		 * Recent lines only. The room's record is our memory so that a drop, a crash
 		 * or a deploy picks the conversation up instead of starting over - and a
@@ -888,6 +905,10 @@ async function main() {
 			for (const l of r.lines || []) {
 				afterId = Math.max(afterId, l.id);
 				if (ended || (l.kind === 'agent' && l.who === agent)) continue;
+				// Old enough to be another call: never "what was just said". The mark
+				// can start behind (a short page, a room that was pruned), and a line
+				// from last week must not arrive as a line from this second.
+				if (Number(l.at) && Date.now() - Number(l.at) > ROOM_MEMORY_MS) continue;
 				if (l.kind === 'agent') {
 					transcript.push({ who: l.who, text: l.text, at: new Date().toISOString() });
 					try {
