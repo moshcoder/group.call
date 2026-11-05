@@ -45,6 +45,22 @@ const SECRET = envVal(PHONE_ENV, 'AGENT_PHONE_SECRET');
 const CALLER_ID = envVal(PHONE_ENV, 'PHONE_CALLER_ID');
 const EVENTS = 'https://qrypt.chat/api/phone/agent-events';
 const VOICES = { riotcoder: 'iP95p4xoKVk53GoZ742B', cha0spunk: 'cgSgspJ2msm6clMCkdW9' }; // ElevenLabs Chris, Jessica
+/**
+ * The Kokoro voice each agent's OpenProfile names (c0mpute's speech_profiles.rs).
+ * These are our own weights: rendered on the c0mpute network when we can reach a
+ * gateway, and by Telnyx's copy of the same model when we cannot. Voice
+ * presentation is an explicit synthetic choice, not a claim about the agent.
+ */
+export const KOKORO_VOICES = {
+	riotcoder: 'am_michael',
+	cha0spunk: 'af_bella',
+	knox: 'af_sarah',
+	rootkey: 'am_onyx',
+	coinpay: 'am_echo',
+	nora: 'af_nicole',
+	quill: 'am_michael',
+};
+export function kokoroVoiceFor(agent) { return KOKORO_VOICES[agent] || 'am_michael'; }
 export const FALLBACK_VOICE = 'AWS.Polly.Matthew-Neural';
 export const POLLY_VOICES = {
 	riotcoder: 'AWS.Polly.Matthew-Neural',
@@ -56,16 +72,77 @@ export const POLLY_VOICES = {
 	quill: 'AWS.Polly.Matthew-Neural',
 };
 export function fallbackVoiceFor(agent) { return POLLY_VOICES[agent] || FALLBACK_VOICE; }
-export function voiceFor(agent, override = '', skipElevenLabs = false) {
+/**
+ * The voice a leg speaks in.
+ *
+ * `engine` picks where the audio is made: 'c0mpute' renders it on our own
+ * network in the agent's profile voice (the `c0mpute:` prefix tells `speak` to
+ * render and play a file rather than ask Telnyx to read text); 'kokoro' is the
+ * same model rendered by Telnyx; otherwise the old behaviour, ElevenLabs with a
+ * Polly fallback.
+ */
+export function voiceFor(agent, override = '', skipElevenLabs = false, engine = '') {
 	if (override) return override;
+	if (engine === 'c0mpute') return `c0mpute:${kokoroVoiceFor(agent)}`;
+	if (engine === 'kokoro') return `Telnyx.KokoroTTS.${kokoroVoiceFor(agent)}`;
 	if (!skipElevenLabs && VOICES[agent]) return `ElevenLabs.Default.${VOICES[agent]}`;
 	return fallbackVoiceFor(agent);
+}
+
+/**
+ * Split a spoken turn so the first words can start playing while the rest is
+ * still being rendered. Kokoro needs whole clauses for its prosody, so a chunk
+ * is never cut mid-sentence and never shorter than `min` unless it is the last
+ * one.
+ */
+export function speechChunks(text, { max = 240, limit = 4 } = {}) {
+	const line = String(text).replace(/\s+/g, ' ').trim();
+	if (!line) return [];
+	const sentences = (line.match(/[^.!?]+(?:[.!?]+|$)/g) ?? [line]).map((s) => s.trim()).filter(Boolean);
+	if (sentences.length <= 1) return [line];
+	// The first sentence goes alone: it is what the caller waits for, and a short
+	// one renders in well under a second.
+	const chunks = [sentences[0]];
+	for (const sentence of sentences.slice(1)) {
+		const last = chunks[chunks.length - 1];
+		const full = chunks.length >= limit;
+		if (chunks.length > 1 && (full || last.length + sentence.length + 1 <= max)) chunks[chunks.length - 1] = `${last} ${sentence}`;
+		else if (full) chunks[chunks.length - 1] = `${last} ${sentence}`;
+		else chunks.push(sentence);
+	}
+	return chunks;
 }
 export function speechRequest(text, voice) {
 	const request = { payload: text, voice };
 	if (voice.startsWith('ElevenLabs.')) request.voice_settings = { api_key_ref: 'qrypt_elevenlabs' };
 	return request;
 }
+/**
+ * Render one spoken line in an agent's own voice on the c0mpute network, through
+ * the show's speech endpoint, and answer with the URL Telnyx should play.
+ *
+ * Telnyx `speak` renders text on Telnyx's side; this renders it on ours. Null
+ * whenever our own network cannot do it, which is never fatal: the caller says
+ * the line with the same Kokoro model hosted by Telnyx instead.
+ */
+export async function renderOnC0mpute(text, { agent, base, key, id, fetcher = fetch, timeoutMs = 45_000 } = {}) {
+	const line = String(text ?? '').trim();
+	if (!base || !key || !line) return null;
+	try {
+		const res = await fetcher(`${String(base).replace(/\/+$/, '')}/api/v1/speech/say`, {
+			method: 'POST',
+			headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+			body: JSON.stringify({ agent, text: line, id }),
+			signal: AbortSignal.timeout(timeoutMs),
+		});
+		if (!res.ok) return null;
+		const said = await res.json();
+		return said && typeof said.url === 'string' && /^https:\/\//.test(said.url) ? said : null;
+	} catch {
+		return null;
+	}
+}
+
 export function identityDtmf(token) {
 	if (!/^\d{8}$/.test(String(token))) throw new Error('Agent join token must be eight digits');
 	return `*${token}#`;
@@ -463,10 +540,22 @@ async function main() {
 			}
 			return `${DISPLAY_NAMES[agent] || agent}, Anthony's AI agent.`;
 		})();
-	const turnTemplate = join ? (a.podcast ? 'podcast-turn.md' : 'group-turn.md') : 'phone-turn.md';
+	const turnTemplate = typeof a.template === 'string' && a.template ? a.template : join ? (a.podcast ? 'podcast-turn.md' : 'group-turn.md') : 'phone-turn.md';
 	const template = read(`${HOME}/.config/qc-agents/${turnTemplate}`);
 	const skipElevenLabs = /^(?:1|true|yes)$/i.test(fromWorkerEnv('AGENT_PHONE_SKIP_ELEVENLABS') || '');
-	const voice = voiceFor(agent, fromWorkerEnv('AGENT_PHONE_VOICE') || '', skipElevenLabs);
+	/**
+	 * Where this leg's audio is made: 'c0mpute' renders it on our own network in
+	 * the agent's profile voice, 'kokoro' is the same model rendered by Telnyx,
+	 * and anything else keeps the old ElevenLabs-with-Polly behaviour.
+	 */
+	const voiceEngine = String(typeof a['voice-engine'] === 'string' ? a['voice-engine'] : fromWorkerEnv('AGENT_PHONE_VOICE_ENGINE') || '').toLowerCase();
+	const speechBase = fromWorkerEnv('AGENT_PHONE_SPEECH_URL') || '';
+	const speechKey = fromWorkerEnv('AGENT_PHONE_SPEECH_KEY') || '';
+	let voice = voiceFor(agent, fromWorkerEnv('AGENT_PHONE_VOICE') || '', skipElevenLabs, voiceEngine);
+	if (voice.startsWith('c0mpute:') && !(speechBase && speechKey)) {
+		voice = `Telnyx.KokoroTTS.${kokoroVoiceFor(agent)}`;
+		if (!a.json) console.error(`(no AGENT_PHONE_SPEECH_URL/KEY: speaking ${voice} instead of rendering on c0mpute)`);
+	}
 	const transcript = [];
 	const started = Date.now();
 	const logFile = `${CALL_LOGS}/${new Date().toISOString().replace(/[:.]/g, '-')}-${agent}-${join ? a.pin : to.replace(/\D/g, '')}.log`;
@@ -586,6 +675,61 @@ async function main() {
 	};
 
 	const act = (path, body) => telnyx(`/calls/${encodeURIComponent(ccid)}/actions/${path}`, body);
+	/** Chunks of the current turn still to render and play, in order. */
+	let playQueue = [];
+	/** The next chunk, already being rendered while the current one plays. */
+	let prefetched = null;
+	let speechSeq = 0;
+	let ourVoiceFailures = 0;
+	const renderingOurselves = () => voice.startsWith('c0mpute:');
+	/** Nothing of this turn is left to play. */
+	const playbackDone = () => !playQueue.length && !prefetched;
+	const stopPlayback = () => {
+		playQueue = [];
+		prefetched = null;
+	};
+	/** Start rendering the next chunk now, so it is ready when this one ends. */
+	const renderNextChunk = () => {
+		const text = playQueue.shift();
+		if (text === undefined) return null;
+		return renderOnC0mpute(text, { agent, base: speechBase, key: speechKey, id: `${session}-${++speechSeq}` });
+	};
+	/**
+	 * Play the next chunk of this turn, keeping one chunk rendering ahead of the
+	 * audio. False when there is nothing left or our network could not render it.
+	 */
+	const playNextChunk = async () => {
+		const pending = prefetched ?? renderNextChunk();
+		prefetched = null;
+		if (!pending) return false;
+		const line = await pending;
+		if (!line) return false;
+		prefetched = renderNextChunk();
+		try {
+			await act('playback_start', { audio_url: line.url, overlay: false });
+		} catch (e) {
+			if (!a.json) console.error(`(playback failed: ${e.message})`);
+			return false;
+		}
+		armSpeechWatchdog(line.seconds);
+		try {
+			appendFileSync(logFile, `${new Date().toISOString().slice(11, 23)} [c0mpute ${line.voice} ${line.seconds}s synth ${line.synthMs}ms]\n`);
+		} catch {}
+		return true;
+	};
+	/**
+	 * A turn is over when its audio is: give playback the line's own length plus
+	 * slack, rather than one flat timeout that cuts long answers off.
+	 */
+	const armSpeechWatchdog = (seconds = 0) => {
+		clearTimeout(speakWatchdog);
+		speakWatchdog = setTimeout(() => {
+			speaking = false;
+			stopPlayback();
+			if (join) releaseFloor(a.pin, agent);
+			try { appendFileSync(logFile, `${new Date().toISOString().slice(11, 23)} [speak-timeout]\n`); } catch {}
+		}, Math.max(30_000, (seconds + 20) * 1000)).unref();
+	};
 	const speak = async (text) => {
 		try {
 			appendFileSync(logFile, `${new Date().toISOString().slice(11, 23)} [spoke-start]\n`);
@@ -593,15 +737,37 @@ async function main() {
 		spoken.push({ text, at: Date.now() });
 		if (spoken.length > 4) spoken.shift();
 		speaking = true;
-		const armSpeechWatchdog = () => {
-			clearTimeout(speakWatchdog);
-			speakWatchdog = setTimeout(() => {
-				speaking = false;
-				if (join) releaseFloor(a.pin, agent);
-				try { appendFileSync(logFile, `${new Date().toISOString().slice(11, 23)} [speak-timeout]\n`); } catch {}
-			}, 30_000).unref();
-		};
 		armSpeechWatchdog();
+		// Our own voice, off the c0mpute network: render the line and play the file.
+		if (renderingOurselves()) {
+			playQueue = speechChunks(text);
+			prefetched = null;
+			if (await playNextChunk()) return;
+			stopPlayback();
+			// Our network could not do it. The same Kokoro weights, rendered by
+			// Telnyx, keep the agent's voice; after two failures stop paying the
+			// round trip to find out and stay on Telnyx's copy for this call.
+			ourVoiceFailures += 1;
+			const kokoro = `Telnyx.KokoroTTS.${kokoroVoiceFor(agent)}`;
+			if (!a.json) console.error(`(c0mpute could not render that line; speaking ${kokoro})`);
+			if (ourVoiceFailures >= 2) voice = kokoro;
+			try {
+				await act('speak', { payload: text, voice: kokoro, language: 'en-US' });
+				return;
+			} catch (e) {
+				const fallback = fallbackVoiceFor(agent);
+				if (!a.json) console.error(`(Kokoro voice failed: ${e.message}; using ${fallback})`);
+				try {
+					await act('speak', { payload: text, voice: fallback });
+				} catch (fallbackError) {
+					clearTimeout(speakWatchdog);
+					speaking = false;
+					if (join) releaseFloor(a.pin, agent);
+					if (!a.json) console.error(`(speech failed: ${fallbackError.message})`);
+				}
+				return;
+			}
+		}
 		const request = speechRequest(text, voice);
 		try {
 			await act('speak', request);
@@ -651,6 +817,18 @@ async function main() {
 
 	/** Tells the model, in plain words, who the newest line was for. */
 	function addressedHint() {
+		if (a.interview) {
+			const newest = recentSpeech();
+			const partner = agent === 'riotcoder' ? 'ChaosPunk' : 'RiotCoder';
+			const partnerAgent = agent === 'riotcoder' ? 'cha0spunk' : 'riotcoder';
+			if (addressed(agent, newest)) return `\n\nTHE GUEST JUST SPOKE TO YOU BY NAME (speech recognition mangles it). Answer or follow up now with SAY. Do not PASS.`;
+			if (addressed(partnerAgent, newest)) return `\n\nThe guest was speaking to ${partner}, not you: PASS.`;
+			const last = [...transcript].reverse().find((t) => !t.history && t.who !== agent);
+			// The co-host asked the guest something and the guest has not answered:
+			// the worst thing either host can do is answer it for him.
+			if (last && last.who === partnerAgent) return `\n\n${partner} just spoke and THE GUEST HAS NOT ANSWERED YET. Say nothing: PASS. Never answer a question ${partner} put to the guest.`;
+			return `\n\nTHE GUEST JUST FINISHED AN ANSWER and you have the floor. Ask your next question now with SAY: one or two sentences, specific, following up on what he actually said. Do not PASS, do not summarise his answer back to him, and do not ask ${partner} anything unless you are handing the topic over.`;
+		}
 		if (a.podcast) {
 			const partnerLine = [...transcript].reverse().find((t) => t.who !== agent && !t.history);
 			if (partnerLine && ['riotcoder', 'cha0spunk'].includes(partnerLine.who)) {
@@ -686,11 +864,34 @@ async function main() {
 		try {
 			const newest = join ? recentSpeech() : '';
 			const firstTurn = join && shouldIntroduce(agent, transcript, Date.now());
-			if (join && !shouldConsiderRoomTurn(agent, newest, { firstTurn, greeter, podcast: a.podcast })) return;
+			if (join && !shouldConsiderRoomTurn(agent, newest, { firstTurn, greeter, podcast: a.podcast || a.interview })) return;
 			const mine = addressed(agent, newest);
 			const namedToAnother = join && !a.podcast && Object.keys(NAME_ALIASES).some((other) => other !== agent && addressed(other, newest)) && !mine;
 			if (namedToAnother) return;
-			const roomQuestionTurn = join && !a.podcast && roomQuestion(newest) && !mine && !greeter;
+			const roomQuestionTurn = join && !a.podcast && !a.interview && roomQuestion(newest) && !mine && !greeter;
+			/**
+			 * Two hosts, one guest: whoever takes the floor asks the next question.
+			 * The lead reaches for it first and the co-host waits a beat, so the
+			 * lead normally leads and the co-host still covers a lead that has gone
+			 * quiet. A host the guest named by name skips the queue.
+			 */
+			const partnerAgent = agent === 'riotcoder' ? 'cha0spunk' : 'riotcoder';
+			const partnerSpokeLast = (() => {
+				const last = [...transcript].reverse().find((t) => !t.history && t.who !== agent);
+				return Boolean(last && last.who === partnerAgent);
+			})();
+			if (join && a.interview && !firstTurn) {
+				// Never answer a question the co-host put to the guest.
+				if (partnerSpokeLast && !mine) return;
+				if (!mine) {
+					await new Promise((r) => setTimeout(r, agent === 'riotcoder' ? 700 : 2600));
+					if (ended) return;
+				}
+				const waitUntil = Date.now() + 8000;
+				while (Date.now() < waitUntil && !ended && (floorTakenByOther(a.pin, agent) || Date.now() - lastVoice < 1200)) await new Promise((r) => setTimeout(r, 150));
+				if (ended || !takeFloor(a.pin, agent, '', 45_000)) return;
+				reservedQuestionFloor = true;
+			}
 			const greetingTurn = firstTurn && !roomQuestionTurn;
 			if (roomQuestionTurn) {
 				// Elect one agent before asking any model, avoiding six simultaneous model calls.
@@ -724,7 +925,8 @@ async function main() {
 						: `In this first line, say who you are: "Hi, this is ${agent}, an AI assistant calling for Anthony."`);
 			const t0 = Date.now();
 			const heardBefore = transcript.filter((t) => t.who === 'them').length;
-			let raw = greetingTurn && !a.podcast ? `SAY: ${agentIntro(agent)}` : await brain(agent, prompt);
+			// A show opens the way its brief says to, not with the stock hello.
+			let raw = greetingTurn && !a.podcast && !a.interview ? `SAY: ${agentIntro(agent)}` : await brain(agent, prompt);
 			let { kind, text, brief: turnBrief, number: callNumber, message: textMessage } = parseTurn(raw);
 			if (greetingTurn && !text && !ended) {
 				// The hello is not optional: one more try before going quiet.
@@ -890,6 +1092,7 @@ async function main() {
 				if (speaking && !hangupAfterSpeech && (!join || (words(d.transcript).length >= 2 && !floorTakenByOther(a.pin, agent)))) {
 					// A person talked over us: stop and listen. (Our own echo and the other agent never cut us off.)
 					act('playback_stop', {}).catch(() => {});
+					stopPlayback();
 					speaking = false;
 					if (join) releaseFloor(a.pin, agent);
 				}
@@ -900,6 +1103,21 @@ async function main() {
 				scheduleTurn();
 				break;
 			}
+			case 'call.playback.ended':
+				// Still more of this turn to play: keep the floor and play it.
+				if (speaking && !playbackDone()) {
+					if (await playNextChunk()) break;
+					stopPlayback();
+				}
+				clearTimeout(speakWatchdog);
+				speakWatchdog = null;
+				try {
+					appendFileSync(logFile, `${new Date().toISOString().slice(11, 23)} [spoke-end]\n`);
+				} catch {}
+				speaking = false;
+				if (join) releaseFloor(a.pin, agent);
+				if (hangupAfterSpeech) await hangup();
+				break;
 			case 'call.speak.ended':
 				clearTimeout(speakWatchdog);
 				speakWatchdog = null;
