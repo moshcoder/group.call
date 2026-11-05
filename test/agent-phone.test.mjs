@@ -218,3 +218,15 @@ test('a spoken line never reads an address out', () => {
   assert.equal(worker.sayable('What broke, and what did it cost?'), 'What broke, and what did it cost?');
   assert.equal(worker.sayable('It worked. Then it did not.'), 'It worked. Then it did not.');
 });
+
+test('a long opening sentence is broken at a clause so the first word comes sooner', () => {
+  const opener = 'Anthony, welcome to Off The Record, I am RiotCoder, and I am here with ChaosPunk, we are your own AI agents hosting this show, does that work for you?';
+  const chunks = worker.speechChunks(opener);
+  assert.ok(chunks.length >= 2, 'expected the opener to be split');
+  assert.ok(chunks[0].length <= 90, `first chunk should be short, got ${chunks[0].length}`);
+  // Broken at a clause boundary, not mid-word, and nothing is lost.
+  assert.ok(chunks[0].endsWith(','), `expected a clause boundary, got ${JSON.stringify(chunks[0])}`);
+  assert.equal(chunks.join(' '), opener);
+  // A short line is still said in one go.
+  assert.deepEqual(worker.speechChunks('What broke?'), ['What broke?']);
+});

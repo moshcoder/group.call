@@ -105,6 +105,17 @@ export function speechChunks(text, { max = 240, limit = 2 } = {}) {
 	const line = String(text).replace(/\s+/g, ' ').trim();
 	if (!line) return [];
 	const sentences = (line.match(/[^.!?]+(?:[.!?]+|$)/g) ?? [line]).map((s) => s.trim()).filter(Boolean);
+	/**
+	 * A long opening sentence is the whole wait: the guest hears nothing until it
+	 * has rendered. So break it at its last clause boundary instead, which Kokoro
+	 * reads as naturally as a full stop and which halves the silence before the
+	 * first word.
+	 */
+	const first = sentences[0] ?? '';
+	if (first.length > 90) {
+		const comma = first.lastIndexOf(', ', 90);
+		if (comma > 25) sentences.splice(0, 1, first.slice(0, comma + 1), first.slice(comma + 2));
+	}
 	if (sentences.length <= 1) return [line];
 	// The first sentence goes alone: it is what the caller waits for, and a short
 	// one renders in well under a second.
