@@ -300,7 +300,9 @@ export function takeFloor(pin, agent, text = '', minimumMs = 0) {
 			if (floorTakenByOther(pin, agent)) return false;
 			const file = floorFile(pin);
 			const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-			writeFileSync(temp, JSON.stringify({ agent, at: Date.now(), until: Date.now() + Math.max(minimumMs, 2500 + (String(text).length / 14) * 1000) }));
+			// The words go in with the claim: a leg hearing something while the other
+			// holds the floor needs them to tell its co-host's voice from a person's.
+			writeFileSync(temp, JSON.stringify({ agent, at: Date.now(), until: Date.now() + Math.max(minimumMs, 2500 + (String(text).length / 14) * 1000), text: String(text).slice(0, 600) }));
 			renameSync(temp, file);
 			return true;
 		});
@@ -317,6 +319,43 @@ function otherAgentTalking(pin, agent, afterMs = 1500) {
 		return '';
 	}
 }
+/** What the other agent is saying right now, as it claimed the floor. */
+function floorSpeech(pin, agent) {
+	try {
+		const f = JSON.parse(readFileSync(floorFile(pin), 'utf8'));
+		return f.agent !== agent ? String(f.text || '') : '';
+	} catch {
+		return '';
+	}
+}
+
+/**
+ * Is this line the floor holder's own voice coming back, rather than somebody
+ * talking over it?
+ *
+ * Holding the floor used to mean every word a leg heard was credited to its
+ * co-host, which threw away the guest whenever he spoke while a host was
+ * talking — and two hosts talking in turn means somebody holds the floor nearly
+ * all of the time. So compare: words that are in what the co-host is saying are
+ * its echo; words that are not are a person, and a person always gets through.
+ */
+export function echoesFloor(heard, floorText) {
+	const words = (text) =>
+		String(text)
+			.toLowerCase()
+			.replace(/[^a-z0-9' ]+/g, ' ')
+			.split(/\s+/)
+			.filter((w) => w.length > 2);
+	const said = words(floorText);
+	if (!said.length) return false;
+	const mine = words(heard);
+	if (!mine.length) return true;
+	const bag = new Set(said);
+	const hits = mine.filter((w) => bag.has(w)).length;
+	// Most of a short line has to match; speech recognition never gets it all.
+	return hits / mine.length >= 0.5;
+}
+
 /** When the other agent last started speaking (ms), or 0. */
 function otherSpokeAt(pin, agent) {
 	try {
@@ -469,6 +508,8 @@ export function parseTurn(out) {
 	if (!m) return { kind: 'pass', text: '' };
 	const kind = m[1].toLowerCase();
 	const text = m[2].trim().split('\n')[0].trim();
+	// "SAY: PASS" is a model saying nothing, not a line to read out.
+	if (/^(?:pass|skip|silence|nothing)\.?$/i.test(text)) return { kind: 'pass', text: '' };
 	if (kind === 'text') {
 		// What everyone on the call is texted: a link, a short note. Without one there is nothing to send.
 		const message = String(/^MESSAGE:\s*(.+)$/m.exec(s)?.[1] || '').trim().slice(0, 600);
@@ -857,7 +898,17 @@ async function main() {
 			// The co-host asked the guest something and the guest has not answered:
 			// the worst thing either host can do is answer it for him.
 			if (last && last.who === partnerAgent) return `\n\n${partner} just spoke and THE GUEST HAS NOT ANSWERED YET. Say nothing: PASS. Never answer a question ${partner} put to the guest.`;
-			return `\n\nTHE GUEST JUST FINISHED AN ANSWER and you have the floor. Ask your next question now with SAY: one or two sentences, specific, following up on what he actually said. Do not PASS, do not summarise his answer back to him, and do not ask ${partner} anything unless you are handing the topic over.`;
+			/**
+			 * A short answer means move on.
+			 *
+			 * On the first co-hosted episode the guest said "I'm checking into that
+			 * now", was asked the same thing again in different words, said "I'm
+			 * looking into it", and hung up. A guest who has nothing more to say on
+			 * a point has told you so; pressing it is how you lose him.
+			 */
+			const lastHeard = [...transcript].reverse().find((t) => t.who === 'them' && !t.history)?.text ?? '';
+			const thin = lastHeard.split(/\s+/).filter(Boolean).length <= 8;
+			return `\n\nTHE GUEST JUST FINISHED AN ANSWER and you have the floor. Ask your next question now with SAY: one or two sentences, specific, following up on what he actually said. Do not PASS, do not summarise his answer back to him, and do not ask ${partner} anything unless you are handing the topic over.${thin ? ` HIS LAST ANSWER WAS SHORT ("${lastHeard.slice(0, 80)}"), which means he has nothing more to say about it. Do NOT ask about that point again in any words. Move to a different subject entirely.` : ''} Read the transcript above before you speak: if a question like yours has already been asked on this call, ask something else.`;
 		}
 		if (a.podcast) {
 			const partnerLine = [...transcript].reverse().find((t) => t.who !== agent && !t.history);
@@ -1106,7 +1157,10 @@ async function main() {
 					} catch {}
 					break;
 				}
-				const otherAgent = join ? otherAgentTalking(a.pin, agent) : '';
+				const holder = join ? otherAgentTalking(a.pin, agent) : '';
+				// Credited to the co-host only when it IS the co-host: anything else
+				// said while it holds the floor is a person, and falls through below.
+				const otherAgent = holder && echoesFloor(d.transcript, floorSpeech(a.pin, agent)) ? holder : '';
 				if (otherAgent) {
 					// The other agent talking: context, not a question for us (unless it names us).
 					transcript.push({ who: otherAgent, text: d.transcript.trim(), at: new Date().toISOString() });
