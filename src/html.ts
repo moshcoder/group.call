@@ -165,6 +165,7 @@ ${list}
   <h2>Room pass</h2>
   ${pass ? `<p>Your pass runs until <strong>${day(pass)}</strong>: up to ${PASS_ROOMS} rooms, and you pick the codes.</p>` : `<p>$${PASS_USD} for ${PASS_DAYS} days: up to ${PASS_ROOMS} rooms instead of ${FREE_ROOMS}, and you pick the codes. Pay in any coin or PayPal on CoinPay.</p>`}
   <form method="post" action="/pass">${csrfField(ctx)}<button>${pass ? 'Add 30 more days' : `Buy a pass ($${PASS_USD})`}</button></form>
+  <p>Deposit $99 in your CoinPay wallet and get a free month: <a href="https://coinpayportal.com/pass">CoinPay Pass</a> (a room pass while it lasts; sign in again after you get it).</p>
   ${data.passes.length ? `<ul class="muted small">${data.passes.slice(0, 5).map((p) => `<li><a href="/pass/${esc(p.id)}">${day(p.createdAt)}</a>: $${(p.amountCents / 100).toFixed(2)}, ${esc(p.status)}</li>`).join('')}</ul>` : ''}
 </section>
 ${dialBlock(ctx)}`,

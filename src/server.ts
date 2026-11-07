@@ -12,7 +12,7 @@ import { createTransport } from 'nodemailer'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { streamSSE } from 'hono/streaming'
 import { authorizeUrl, exchangeCode, pkce } from '@profullstack/coinpay-onboard/oauth'
-import { CoinPay, PAID_EVENTS, verifyWebhook, type WebhookEvent } from '@profullstack/coinpay-onboard'
+import { CoinPay, PAID_EVENTS, passFromUserinfo, verifyWebhook, type WebhookEvent } from '@profullstack/coinpay-onboard'
 import { sameSecret } from '@profullstack/group-call'
 import { helpPage, homePage, installScript, invitedPage, invitesPage, mePage, messagePage, passPage, roomPage, roomsPage, SITE, type Ctx } from './html.js'
 import { Sealer, Store, type Recording, type Room, type User } from './db.js'
@@ -212,6 +212,9 @@ export function createApp(deps: Deps) {
       const me = await new CoinPay({ base: config.coinpayBase, token: tokens.accessToken, ...(config.fetch ? { fetch: config.fetch } : {}) }).userinfo()
       const isNew = !store.user(me.sub)
       const user = store.upsertUser(me.sub, me.name ?? '', (me.email ?? '').toLowerCase(), tokens)
+      // Profullstack Pass: a room pass until it expires (store.passUntil takes the later date).
+      const coinpayPass = passFromUserinfo(me)
+      store.setCoinpayPassUntil(user.sub, coinpayPass.active && coinpayPass.expiresAt ? coinpayPass.expiresAt.getTime() : null)
       const sid = store.newSession(user.sub)
       // Signed in through an invite or an affiliate link: credit whoever brought them.
       const invite = getCookie(c, INVITE)

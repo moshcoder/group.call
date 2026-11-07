@@ -189,7 +189,7 @@ export class Store {
     // Group texts: every number a room has texted, and whether it said STOP.
     this.db.exec('CREATE TABLE IF NOT EXISTS sms_numbers (number TEXT PRIMARY KEY, opted_out INTEGER NOT NULL DEFAULT 0, first_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)')
     // Added later: an agent that waits in the room with early callers until the host arrives.
-    for (const sql of ['ALTER TABLE rooms ADD COLUMN greeter TEXT', 'ALTER TABLE rooms ADD COLUMN host TEXT', "ALTER TABLE agent_invites ADD COLUMN role TEXT NOT NULL DEFAULT ''", "ALTER TABLE agent_invites ADD COLUMN join_token TEXT NOT NULL DEFAULT ''", "ALTER TABLE dialled_legs ADD COLUMN name TEXT NOT NULL DEFAULT ''"]) {
+    for (const sql of ['ALTER TABLE rooms ADD COLUMN greeter TEXT', 'ALTER TABLE rooms ADD COLUMN host TEXT', "ALTER TABLE agent_invites ADD COLUMN role TEXT NOT NULL DEFAULT ''", "ALTER TABLE agent_invites ADD COLUMN join_token TEXT NOT NULL DEFAULT ''", "ALTER TABLE dialled_legs ADD COLUMN name TEXT NOT NULL DEFAULT ''", 'ALTER TABLE users ADD COLUMN coinpay_pass_until INTEGER']) {
       try {
         this.db.exec(sql)
       } catch {}
@@ -667,12 +667,26 @@ export class Store {
   /**
    * When the person's pass runs out, or null without one. Passes stack: each paid
    * one adds its days after the later of when it was paid and when the last ran out.
+   * A Profullstack Pass (CoinPay, seen at sign-in) counts as a room pass until it
+   * expires: the later of the two wins.
    */
   passUntil(sub: string, now = Date.now()): number | null {
     const paid = (this.db.query("SELECT days, paid_at FROM passes WHERE sub = ? AND status = 'paid' ORDER BY paid_at").all(sub) as { days: number; paid_at: number }[])
     let until = 0
     for (const p of paid) until = Math.max(until, p.paid_at) + p.days * 86400_000
+    until = Math.max(until, this.coinpayPassUntil(sub) ?? 0)
     return until > now ? until : null
+  }
+
+  /** The Profullstack Pass expiry CoinPay reported at the last sign-in (ms), or null. */
+  coinpayPassUntil(sub: string): number | null {
+    const row = this.db.query('SELECT coinpay_pass_until AS until FROM users WHERE sub = ?').get(sub) as { until: number | null } | null
+    return row?.until ?? null
+  }
+
+  /** Remember the Profullstack Pass from this sign-in; null clears it (inactive or expired). */
+  setCoinpayPassUntil(sub: string, until: number | null): void {
+    this.db.query('UPDATE users SET coinpay_pass_until = ? WHERE sub = ?').run(until, sub)
   }
 }
 

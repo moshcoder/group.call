@@ -420,6 +420,36 @@ describe('pages', () => {
     expect(store.rooms('sub-new')).toHaveLength(1)
   })
 
+  test('a Profullstack Pass at sign-in counts as a room pass until it expires', async () => {
+    const expires = new Date(Date.now() + 20 * 86400_000)
+    let pass: unknown = { active: true, expires_at: expires.toISOString() }
+    const fetch = async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname
+      if (path === '/api/oauth/token') return new Response(JSON.stringify({ access_token: 'new-access', expires_in: 3600 }), { status: 200 })
+      if (path === '/api/oauth/userinfo') return new Response(JSON.stringify({ sub: 'sub-pass', name: 'Pass Holder', email: 'p@example.com', pass }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    }
+    const { app, store } = setup({ fetch })
+    const signIn = async () => {
+      const r = await app.request('/auth/start?next=/rooms')
+      const state = new URL(r.headers.get('location')!).searchParams.get('state')!
+      const cb = await app.request(`/auth/callback?state=${encodeURIComponent(state)}&code=approved`, { headers: { cookie: r.headers.get('set-cookie')!.split(';', 1)[0]! } })
+      expect(cb.status).toBe(302)
+    }
+    await signIn()
+    expect(store.passUntil('sub-pass')).toBe(expires.getTime())
+    // A bought room pass running longer wins; the later date counts.
+    store.addPass({ id: 'cs_long', sub: 'sub-pass', amountCents: 500, checkoutUrl: 'https://coinpayportal.com/x', days: 30 })
+    store.markPassPaid('cs_long')
+    expect(store.passUntil('sub-pass')!).toBeGreaterThan(expires.getTime())
+    // No pass (or a malformed or expired one) at the next sign-in clears it.
+    for (const p of [{ active: false }, { active: true, expires_at: 'soon' }, { active: true, expires_at: '2020-01-01T00:00:00Z' }]) {
+      pass = p
+      await signIn()
+      expect(store.coinpayPassUntil('sub-pass')).toBeNull()
+    }
+  })
+
   test('a room page needs you signed in, and is only its owner\'s', async () => {
     const { app } = setup()
     const r = await app.request('/r/4821')
