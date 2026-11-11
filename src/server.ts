@@ -112,6 +112,12 @@ export function createApp(deps: Deps) {
   })
 
   app.get('/health', (c) => c.json({ ok: true, version: VERSION, phone: Boolean(svc.line?.armed) }))
+  /** The podcast on the air right now (TUI Weekly / Off The Record recordings), as one live MP3. */
+  app.get('/api/v1/broadcast/live.mp3', () => {
+    const stream = svc.broadcastRelay?.listen() ?? null
+    if (!stream) return new Response('Nothing is on the air.', { status: 404, headers: { 'cache-control': 'no-store' } })
+    return new Response(stream, { headers: { 'content-type': 'audio/mpeg', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } })
+  })
 
   const TYPES: Record<string, string> = {
     css: 'text/css; charset=utf-8',
@@ -1035,13 +1041,16 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
       ...(env.GROUPCALL_SIP_HOSTS ? { sipHosts: list(env.GROUPCALL_SIP_HOSTS) } : {}),
       ...(env.GROUPCALL_MESSAGING_PROFILE_ID ? { messagingProfileId: env.GROUPCALL_MESSAGING_PROFILE_ID } : {}),
       ...(env.GROUPCALL_SMSHUB_URL ? { smshubUrl: env.GROUPCALL_SMSHUB_URL } : {}),
-      ...(broadcastStreamKey && env.GROUPCALL_BROADCAST_NIXAMP_URL && (env.GROUPCALL_BROADCAST_NIXAMP_KEY || env.GROUPCALL_BROADCAST_NIXAMP_TOKEN)
+      ...(broadcastStreamKey
         ? { broadcast: {
             streamUrl: broadcastStreamUrl.toString(),
-            nixampUrl: env.GROUPCALL_BROADCAST_NIXAMP_URL,
-            ...(env.GROUPCALL_BROADCAST_NIXAMP_KEY ? { nixampKey: env.GROUPCALL_BROADCAST_NIXAMP_KEY } : {}),
-            ...(env.GROUPCALL_BROADCAST_NIXAMP_TOKEN ? { nixampToken: env.GROUPCALL_BROADCAST_NIXAMP_TOKEN } : {}),
+            listenUrl: `${env.GROUPCALL_ORIGIN ?? SITE}/api/v1/broadcast/live.mp3`,
             name: env.GROUPCALL_BROADCAST_NAME ?? 'TUI Weekly live',
+            // A show went on the air: the command gets its address and name in the
+            // environment (never spliced into the command text), e.g. golive start --live.
+            ...(env.GROUPCALL_BROADCAST_CMD
+              ? { onLive: (live: { url: string; name: string }) => void Bun.spawn(['sh', '-c', env.GROUPCALL_BROADCAST_CMD!], { env: { ...process.env, GROUPCALL_LIVE_URL: live.url, GROUPCALL_LIVE_NAME: live.name }, stdout: 'inherit', stderr: 'inherit' }).exited }
+              : {}),
           } }
         : {}),
     },

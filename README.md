@@ -113,19 +113,28 @@ Email-only room invitations use Forward Email SMTP: `GROUPCALL_SMTP_HOST` defaul
 `anthony@profullstack.com`. Set `GROUPCALL_SMTP_PASS` in the production vault and use
 `GROUPCALL_EMAIL_FROM=Anthony <anthony@profullstack.com>`. Gmail is not used for sending.
 
-### Live Nixamp broadcast
+### Live podcast broadcast
 
-Set `GROUPCALL_BROADCAST_NIXAMP_URL`, `GROUPCALL_BROADCAST_NIXAMP_KEY` and a random
-`GROUPCALL_BROADCAST_STREAM_KEY` to enable automatic live broadcasts for rooms named
-TUI Weekly or Off The Record. When Riotcoder joins either podcast room, Telnyx forks both
-audio tracks to `/api/v1/broadcast/stream`; the stream key protects that WebSocket from
-outside publishers. group.call mixes and encodes the tracks as MP3 and keeps Nixamp's
-`/api/ingest` request open until the call ends, using the show name. The Nixamp server
-must be started with `--ingest`. Its control key is sent in the `x-nixamp-key` header.
-`GROUPCALL_BROADCAST_NIXAMP_TOKEN` is also supported for an owner account bearer token.
+Set a random `GROUPCALL_BROADCAST_STREAM_KEY` to enable automatic live broadcasts for rooms
+named TUI Weekly or Off The Record. When Riotcoder joins either podcast room, Telnyx forks
+both audio tracks of its leg (its voice and the room it hears) to `/api/v1/broadcast/stream`;
+the stream key protects that WebSocket from outside publishers. group.call mixes the tracks,
+encodes MP3 and serves it to any number of listeners at **`/api/v1/broadcast/live.mp3`**
+(404 when nothing is on the air; each listener's stream ends when the show does).
+
+`GROUPCALL_BROADCAST_CMD` (a shell command) runs when a show goes on the air, with the
+address in `GROUPCALL_LIVE_URL` and the show in `GROUPCALL_LIVE_NAME`. On dev2 it calls the
+[golive](https://github.com/profullstack/golive) CLI, which carries the live MP3 to nixamp,
+live.streaming, backtoschool.help and pairux.com/@moshcoding while it lasts:
+
+```sh
+GROUPCALL_BROADCAST_CMD='/usr/sbin/runuser -u anthony -- /home/anthony/.local/bin/golive start "$GROUPCALL_LIVE_URL" --live --title "$GROUPCALL_LIVE_NAME"'
+```
+
 Set `GROUPCALL_BROADCAST_STREAM_URL` when the public WebSocket URL differs from the
-group.call origin. The relay stays disabled unless the Nixamp URL and credentials are
-present.
+group.call origin. (Earlier versions POSTed the MP3 to a nixamp server's `/api/ingest`;
+nixamp decodes that into a pipe nobody reads, so it was never heard. The
+`GROUPCALL_BROADCAST_NIXAMP_*` variables are no longer used.)
 
 ### Least-cost routing
 
