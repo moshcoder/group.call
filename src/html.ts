@@ -18,6 +18,9 @@ export const REPO = 'https://github.com/moshcoder/group.call'
 const ENGINE = 'https://github.com/profullstack/group-call'
 
 const TRACKER_SITE = process.env.CRAWLPROOF_SITE_ID ?? ''
+// WebMCP (@profullstack/webmcp): site_info, open_page and the annotated room forms as tools for the
+// AI agent in the visitor's browser. No form auto-submits: they create rooms or reach people.
+const WEBMCP = `<script type="module" data-webmcp src="https://cdn.jsdelivr.net/npm/@profullstack/webmcp@0/src/embed.js" data-pages='{"rooms":"/rooms","help":"/help","invites":"/invites","account":"/me"}'></script>`
 const TRACKER = TRACKER_SITE && TRACKER_SITE !== 'off' ? `<script data-site="${TRACKER_SITE}" src="https://crawlproof.com/stats.js" async></script>` : ''
 
 const asset = (name: string) => {
@@ -62,6 +65,7 @@ ${o.noindex ? '<meta name="robots" content="noindex">' : `<link rel="canonical" 
 <link rel="stylesheet" href="${STYLE_URL}">
 <script src="${SCRIPT_URL}" defer></script>
 ${TRACKER}
+${WEBMCP}
 </head>
 <body>
 ${RING_PLACEHOLDER}
@@ -153,7 +157,7 @@ export function roomsPage(ctx: Ctx, data: { rooms: Room[]; live: Record<string, 
     body: `<h1>Your rooms</h1>
 ${flashNote(data.flash)}${flashNote(data.error, true)}
 ${list}
-<form method="post" action="/rooms" class="stack">
+<form method="post" action="/rooms" class="stack" toolname="create_room" tooldescription="Fill in the new-room form (room name, optional code); the person presses the button to create the call room">
   ${csrfField(ctx)}
   <h2>New room</h2>
   <label>Name <input name="name" maxlength="60" placeholder="Monday standup" value="${esc(v.name ?? '')}"></label>
@@ -211,7 +215,7 @@ ${
     ? `<section>
   <h2>Invite from your contacts</h2>
   <p class="muted small">Names from <a href="/me#contacts">your contacts</a>: phone and SIP contacts are called, and email-only contacts get the room number and code by email. On the call, a trusted caller can just say <b>"invite riotcoder and Kim"</b>.</p>
-  <form method="post" action="/r/${esc(r.code)}/invite" class="row">${csrfField(ctx)}<input name="names" maxlength="300" required placeholder="riotcoder, cha0spunk, Kim" aria-label="Who to invite"><button>Invite</button></form>
+  <form method="post" action="/r/${esc(r.code)}/invite" class="row" toolname="invite_to_room" tooldescription="Fill in who to invite to this call room (comma-separated saved contacts or agent names); the person confirms and submits">${csrfField(ctx)}<input name="names" maxlength="300" required placeholder="riotcoder, cha0spunk, Kim" aria-label="Who to invite"><button>Invite</button></form>
 </section>`
     : ''
 }

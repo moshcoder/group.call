@@ -34,7 +34,7 @@ const CAMPAIGN_KEYS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', '
 const SCOPES = ['openid', 'profile', 'email']
 
 const SECURITY_HEADERS: Record<string, string> = {
-  'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' https://crawlproof.com; img-src 'self' data: https://built.indie.pit.world https://pwamart.com; connect-src 'self' https://crawlproof.com; media-src 'self'; manifest-src 'self'; worker-src 'self'; frame-src https://crawlproof.com; form-action 'self' https://coinpayportal.com https://pit.world; base-uri 'none'; frame-ancestors 'none'",
+  'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' https://crawlproof.com https://cdn.jsdelivr.net; img-src 'self' data: https://built.indie.pit.world https://pwamart.com; connect-src 'self' https://crawlproof.com; media-src 'self'; manifest-src 'self'; worker-src 'self'; frame-src https://crawlproof.com; form-action 'self' https://coinpayportal.com https://pit.world; base-uri 'none'; frame-ancestors 'none'",
   'referrer-policy': 'strict-origin-when-cross-origin',
   'x-content-type-options': 'nosniff',
   'permissions-policy': 'interest-cohort=(), browsing-topics=(), camera=(), microphone=(), geolocation=()',
