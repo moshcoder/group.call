@@ -98,7 +98,7 @@ export type Config = {
   /** Where finished recordings are kept as mp3; without it, rooms cannot record. */
   recordingsDir?: string
   /** Fork Riotcoder's mixed call audio to a receive-only live relay. */
-  broadcast?: { streamUrl: string; nixampUrl: string; nixampToken?: string; nixampKey?: string; name?: string }
+  broadcast?: { streamUrl: string; listenUrl: string; name?: string; onLive?: (live: { url: string; name: string }) => void }
   /** SIP hosts an operator may dial a voice agent in from (ElevenLabs by default). */
   sipHosts?: string[]
   /** Where smshub.dev lives, for accounts that send their group texts through it. */
@@ -335,9 +335,10 @@ export class GroupCallService {
       const response = await (this.config.fetch ?? fetch)(`https://api.telnyx.com/v2/calls/${encodeURIComponent(leg)}/actions/streaming_start`, {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ stream_url: relay.streamUrl, stream_track: 'both_tracks', client_state: Buffer.from(JSON.stringify({ room: code, leg, podcast })).toString('base64url') }),
+        // Telnyx documents client_state as base64; base64url (- and _) is the likely cause of the 422 seen 2026-11-10.
+        body: JSON.stringify({ stream_url: relay.streamUrl, stream_track: 'both_tracks', client_state: Buffer.from(JSON.stringify({ room: code, leg, podcast })).toString('base64') }),
       })
-      if (!response.ok) console.error(`group.call: broadcast stream start failed (${response.status})`)
+      if (!response.ok) console.error(`group.call: broadcast stream start failed (${response.status}): ${(await response.text().catch(() => '')).slice(0, 300)}`)
       else console.log(`group.call: broadcasting ${podcast} room ${code} through Riotcoder's receive-only leg`)
     } catch (error) { console.error(`group.call: broadcast stream start failed: ${(error as Error).message}`) }
   }
